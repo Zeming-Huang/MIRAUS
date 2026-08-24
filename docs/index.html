@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Visual comparison of MIRAUS prostate segmentation results.">
+  <title>MIRAUS Results</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="styles.css?v=6">
+</head>
+<body>
+  <header class="topbar">
+    <div><strong>MIRAUS</strong><span>Segmentation results</span></div>
+  </header>
+
+  <main>
+    <section class="toolbar" aria-label="Result controls">
+      <label><span>Sample</span><select id="sample-select"></select></label>
+      <fieldset>
+        <legend>Slice position</legend>
+        <div class="region-control" id="region-control">
+          <button type="button" data-region="apex">Apex</button>
+          <button type="button" data-region="mid-gland" class="active">Mid-gland</button>
+          <button type="button" data-region="base">Base</button>
+        </div>
+      </fieldset>
+      <label class="opacity-control">
+        <span>Contour opacity <output id="opacity-value">72%</output></span>
+        <input id="opacity-slider" type="range" min="0" max="100" value="72">
+      </label>
+      <div class="selection-summary">
+        <strong id="viewer-title">Sample 01 · Mid-gland</strong>
+      </div>
+    </section>
+
+    <section class="comparison-grid" aria-label="Segmentation comparison">
+      <article class="result-panel reference-panel">
+        <div class="panel-heading">
+          <div><span class="panel-index">A</span><h2>Reference</h2></div>
+          <span class="key"><i class="gt"></i>Ground truth</span>
+        </div>
+        <div class="image-frame">
+          <img class="base-image" alt="Original TRUS slice">
+          <img class="overlay-image" data-overlay="ground-truth.png" alt="Ground-truth contour">
+        </div>
+        <p>Original TRUS with manual annotation</p>
+      </article>
+
+      <article class="result-panel baseline-panel">
+        <div class="panel-heading">
+          <div><span class="panel-index">B</span><h2>TRUS-only baseline</h2></div>
+          <span class="key"><i class="baseline"></i>Prediction</span>
+        </div>
+        <div class="image-frame">
+          <img class="base-image" alt="Original TRUS slice">
+          <img class="overlay-image" data-overlay="ground-truth.png" alt="Ground-truth contour">
+          <img class="overlay-image" data-overlay="baseline.png" alt="Baseline prediction contour">
+        </div>
+        <dl class="metrics">
+          <div><dt>Dice</dt><dd id="baseline-dice">—</dd></div>
+          <div><dt>IoU</dt><dd id="baseline-iou">—</dd></div>
+          <div><dt>HD95</dt><dd id="baseline-hd95">—</dd></div>
+        </dl>
+      </article>
+
+      <article class="result-panel miraus-panel">
+        <div class="panel-heading">
+          <div><span class="panel-index">C</span><h2>MIRAUS</h2></div>
+          <span class="key"><i class="miraus"></i>Prediction</span>
+        </div>
+        <div class="image-frame">
+          <img class="base-image" alt="Original TRUS slice">
+          <img class="overlay-image" data-overlay="ground-truth.png" alt="Ground-truth contour">
+          <img class="overlay-image" data-overlay="miraus.png" alt="MIRAUS prediction contour">
+        </div>
+        <dl class="metrics">
+          <div><dt>Dice</dt><dd id="miraus-dice">—</dd></div>
+          <div><dt>IoU</dt><dd id="miraus-iou">—</dd></div>
+          <div><dt>HD95</dt><dd id="miraus-hd95">—</dd></div>
+        </dl>
+      </article>
+
+      <article class="result-panel error-panel">
+        <div class="panel-heading">
+          <div><span class="panel-index">D</span><h2>Probability difference</h2></div>
+        </div>
+        <div class="image-frame">
+          <img class="base-image" alt="Original TRUS slice">
+          <img class="overlay-image" data-overlay="miraus-error.png" alt="Signed probability difference">
+        </div>
+        <div class="error-legend" aria-label="Error-map legend">
+          <span><i class="gain"></i>MIRAUS higher</span>
+          <span><i class="suppression"></i>MIRAUS lower</span>
+          <span><i class="reference"></i>Reference</span>
+        </div>
+      </article>
+    </section>
+  </main>
+
+  <footer>
+    <span>Research use only</span>
+    <a href="https://muregpro.github.io/policies.html" target="_blank" rel="noreferrer">μRegPro · CC BY-NC-SA 4.0</a>
+  </footer>
+  <div class="loading-state" id="loading-state">Loading results</div>
+  <script src="app.js?v=6"></script>
+</body>
+</html>

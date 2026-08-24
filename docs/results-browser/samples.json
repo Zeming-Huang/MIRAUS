@@ -1,0 +1,682 @@
+{
+  "version": 1,
+  "evaluation": "Patient-disjoint five-fold out-of-fold predictions",
+  "spacing_mm": 0.8,
+  "samples": [
+    {
+      "id": "sample-01",
+      "label": "Sample 01",
+      "regions": {
+        "apex": {
+          "relative_depth": 17,
+          "miraus": {
+            "dice": 88.23,
+            "iou": 78.94,
+            "hd95": 11.2
+          },
+          "baseline": {
+            "dice": 81.4,
+            "iou": 68.63,
+            "hd95": 7.38
+          }
+        },
+        "mid-gland": {
+          "relative_depth": 52,
+          "miraus": {
+            "dice": 97.15,
+            "iou": 94.46,
+            "hd95": 2.74
+          },
+          "baseline": {
+            "dice": 95.39,
+            "iou": 91.19,
+            "hd95": 4.8
+          }
+        },
+        "base": {
+          "relative_depth": 85,
+          "miraus": {
+            "dice": 91.6,
+            "iou": 84.5,
+            "hd95": 3.3
+          },
+          "baseline": {
+            "dice": 17.39,
+            "iou": 9.52,
+            "hd95": 27.4
+          }
+        }
+      }
+    },
+    {
+      "id": "sample-02",
+      "label": "Sample 02",
+      "regions": {
+        "apex": {
+          "relative_depth": 17,
+          "miraus": {
+            "dice": 92.69,
+            "iou": 86.37,
+            "hd95": 4.8
+          },
+          "baseline": {
+            "dice": 89.45,
+            "iou": 80.92,
+            "hd95": 6.4
+          }
+        },
+        "mid-gland": {
+          "relative_depth": 51,
+          "miraus": {
+            "dice": 95.6,
+            "iou": 91.57,
+            "hd95": 3.01
+          },
+          "baseline": {
+            "dice": 96.69,
+            "iou": 93.58,
+            "hd95": 2.26
+          }
+        },
+        "base": {
+          "relative_depth": 84,
+          "miraus": {
+            "dice": 66.27,
+            "iou": 49.55,
+            "hd95": 9.73
+          },
+          "baseline": {
+            "dice": 2.5,
+            "iou": 1.27,
+            "hd95": 51.2
+          }
+        }
+      }
+    },
+    {
+      "id": "sample-03",
+      "label": "Sample 03",
+      "regions": {
+        "apex": {
+          "relative_depth": 16,
+          "miraus": {
+            "dice": 94.53,
+            "iou": 89.63,
+            "hd95": 2.4
+          },
+          "baseline": {
+            "dice": 92.28,
+            "iou": 85.67,
+            "hd95": 4.08
+          }
+        },
+        "mid-gland": {
+          "relative_depth": 51,
+          "miraus": {
+            "dice": 97.68,
+            "iou": 95.46,
+            "hd95": 1.6
+          },
+          "baseline": {
+            "dice": 97.49,
+            "iou": 95.11,
+            "hd95": 2.26
+          }
+        },
+        "base": {
+          "relative_depth": 85,
+          "miraus": {
+            "dice": 95.18,
+            "iou": 90.8,
+            "hd95": 1.6
+          },
+          "baseline": {
+            "dice": 51.66,
+            "iou": 34.83,
+            "hd95": 10.76
+          }
+        }
+      }
+    },
+    {
+      "id": "sample-04",
+      "label": "Sample 04",
+      "regions": {
+        "apex": {
+          "relative_depth": 18,
+          "miraus": {
+            "dice": 96.98,
+            "iou": 94.14,
+            "hd95": 1.6
+          },
+          "baseline": {
+            "dice": 97.57,
+            "iou": 95.26,
+            "hd95": 1.6
+          }
+        },
+        "mid-gland": {
+          "relative_depth": 51,
+          "miraus": {
+            "dice": 98.25,
+            "iou": 96.56,
+            "hd95": 1.6
+          },
+          "baseline": {
+            "dice": 93.33,
+            "iou": 87.49,
+            "hd95": 5.77
+          }
+        },
+        "base": {
+          "relative_depth": 85,
+          "miraus": {
+            "dice": 93.36,
+            "iou": 87.54,
+            "hd95": 8.92
+          },
+          "baseline": {
+            "dice": 52.45,
+            "iou": 35.54,
+            "hd95": 10.02
+          }
+        }
+      }
+    },
+    {
+      "id": "sample-05",
+      "label": "Sample 05",
+      "regions": {
+        "apex": {
+          "relative_depth": 16,
+          "miraus": {
+            "dice": 88.63,
+            "iou": 79.59,
+            "hd95": 5.66
+          },
+          "baseline": {
+            "dice": 88.14,
+            "iou": 78.8,
+            "hd95": 4.46
+          }
+        },
+        "mid-gland": {
+          "relative_depth": 50,
+          "miraus": {
+            "dice": 72.8,
+            "iou": 57.23,
+            "hd95": 14.31
+          },
+          "baseline": {
+            "dice": 43.2,
+            "iou": 27.55,
+            "hd95": 18.97
+          }
+        },
+        "base": {
+          "relative_depth": 84,
+          "miraus": {
+            "dice": 83.19,
+            "iou": 71.22,
+            "hd95": 15.85
+          },
+          "baseline": {
+            "dice": 78.78,
+            "iou": 64.99,
+            "hd95": 15.29
+          }
+        }
+      }
+    },
+    {
+      "id": "sample-06",
+      "label": "Sample 06",
+      "regions": {
+        "apex": {
+          "relative_depth": 16,
+          "miraus": {
+            "dice": 94.1,
+            "iou": 88.85,
+            "hd95": 3.25
+          },
+          "baseline": {
+            "dice": 87.71,
+            "iou": 78.12,
+            "hd95": 4.66
+          }
+        },
+        "mid-gland": {
+          "relative_depth": 51,
+          "miraus": {
+            "dice": 95.57,
+            "iou": 91.52,
+            "hd95": 2.4
+          },
+          "baseline": {
+            "dice": 94.15,
+            "iou": 88.94,
+            "hd95": 3.2
+          }
+        },
+        "base": {
+          "relative_depth": 86,
+          "miraus": {
+            "dice": 92.03,
+            "iou": 85.23,
+            "hd95": 1.79
+          },
+          "baseline": {
+            "dice": 71.97,
+            "iou": 56.21,
+            "hd95": 8.25
+          }
+        }
+      }
+    },
+    {
+      "id": "sample-07",
+      "label": "Sample 07",
+      "regions": {
+        "apex": {
+          "relative_depth": 18,
+          "miraus": {
+            "dice": 94.48,
+            "iou": 89.54,
+            "hd95": 4.0
+          },
+          "baseline": {
+            "dice": 77.58,
+            "iou": 63.37,
+            "hd95": 12.0
+          }
+        },
+        "mid-gland": {
+          "relative_depth": 52,
+          "miraus": {
+            "dice": 96.52,
+            "iou": 93.27,
+            "hd95": 1.6
+          },
+          "baseline": {
+            "dice": 96.22,
+            "iou": 92.71,
+            "hd95": 1.86
+          }
+        },
+        "base": {
+          "relative_depth": 85,
+          "miraus": {
+            "dice": 93.94,
+            "iou": 88.57,
+            "hd95": 1.79
+          },
+          "baseline": {
+            "dice": 87.06,
+            "iou": 77.09,
+            "hd95": 4.08
+          }
+        }
+      }
+    },
+    {
+      "id": "sample-08",
+      "label": "Sample 08",
+      "regions": {
+        "apex": {
+          "relative_depth": 16,
+          "miraus": {
+            "dice": 81.02,
+            "iou": 68.09,
+            "hd95": 6.45
+          },
+          "baseline": {
+            "dice": 78.59,
+            "iou": 64.73,
+            "hd95": 6.82
+          }
+        },
+        "mid-gland": {
+          "relative_depth": 50,
+          "miraus": {
+            "dice": 93.81,
+            "iou": 88.33,
+            "hd95": 3.58
+          },
+          "baseline": {
+            "dice": 93.72,
+            "iou": 88.18,
+            "hd95": 3.58
+          }
+        },
+        "base": {
+          "relative_depth": 84,
+          "miraus": {
+            "dice": 88.55,
+            "iou": 79.46,
+            "hd95": 4.0
+          },
+          "baseline": {
+            "dice": 68.91,
+            "iou": 52.57,
+            "hd95": 11.15
+          }
+        }
+      }
+    },
+    {
+      "id": "sample-09",
+      "label": "Sample 09",
+      "regions": {
+        "apex": {
+          "relative_depth": 16,
+          "miraus": {
+            "dice": 94.43,
+            "iou": 89.45,
+            "hd95": 1.6
+          },
+          "baseline": {
+            "dice": 72.85,
+            "iou": 57.3,
+            "hd95": 7.38
+          }
+        },
+        "mid-gland": {
+          "relative_depth": 51,
+          "miraus": {
+            "dice": 95.84,
+            "iou": 92.01,
+            "hd95": 2.26
+          },
+          "baseline": {
+            "dice": 95.89,
+            "iou": 92.1,
+            "hd95": 2.26
+          }
+        },
+        "base": {
+          "relative_depth": 85,
+          "miraus": {
+            "dice": 96.92,
+            "iou": 94.02,
+            "hd95": 1.13
+          },
+          "baseline": {
+            "dice": 96.44,
+            "iou": 93.12,
+            "hd95": 1.13
+          }
+        }
+      }
+    },
+    {
+      "id": "sample-10",
+      "label": "Sample 10",
+      "regions": {
+        "apex": {
+          "relative_depth": 17,
+          "miraus": {
+            "dice": 95.39,
+            "iou": 91.18,
+            "hd95": 2.53
+          },
+          "baseline": {
+            "dice": 94.32,
+            "iou": 89.25,
+            "hd95": 4.0
+          }
+        },
+        "mid-gland": {
+          "relative_depth": 52,
+          "miraus": {
+            "dice": 97.26,
+            "iou": 94.66,
+            "hd95": 1.79
+          },
+          "baseline": {
+            "dice": 97.37,
+            "iou": 94.87,
+            "hd95": 1.6
+          }
+        },
+        "base": {
+          "relative_depth": 85,
+          "miraus": {
+            "dice": 95.04,
+            "iou": 90.55,
+            "hd95": 1.6
+          },
+          "baseline": {
+            "dice": 94.44,
+            "iou": 89.47,
+            "hd95": 1.75
+          }
+        }
+      }
+    },
+    {
+      "id": "sample-11",
+      "label": "Sample 11",
+      "regions": {
+        "apex": {
+          "relative_depth": 17,
+          "miraus": {
+            "dice": 95.67,
+            "iou": 91.7,
+            "hd95": 2.4
+          },
+          "baseline": {
+            "dice": 96.11,
+            "iou": 92.52,
+            "hd95": 1.6
+          }
+        },
+        "mid-gland": {
+          "relative_depth": 52,
+          "miraus": {
+            "dice": 97.2,
+            "iou": 94.55,
+            "hd95": 3.2
+          },
+          "baseline": {
+            "dice": 98.39,
+            "iou": 96.84,
+            "hd95": 1.13
+          }
+        },
+        "base": {
+          "relative_depth": 84,
+          "miraus": {
+            "dice": 92.03,
+            "iou": 85.23,
+            "hd95": 4.0
+          },
+          "baseline": {
+            "dice": 88.96,
+            "iou": 80.12,
+            "hd95": 4.0
+          }
+        }
+      }
+    },
+    {
+      "id": "sample-12",
+      "label": "Sample 12",
+      "regions": {
+        "apex": {
+          "relative_depth": 18,
+          "miraus": {
+            "dice": 92.72,
+            "iou": 86.44,
+            "hd95": 3.2
+          },
+          "baseline": {
+            "dice": 93.38,
+            "iou": 87.58,
+            "hd95": 3.3
+          }
+        },
+        "mid-gland": {
+          "relative_depth": 51,
+          "miraus": {
+            "dice": 90.26,
+            "iou": 82.25,
+            "hd95": 8.13
+          },
+          "baseline": {
+            "dice": 94.9,
+            "iou": 90.3,
+            "hd95": 4.79
+          }
+        },
+        "base": {
+          "relative_depth": 84,
+          "miraus": {
+            "dice": 96.18,
+            "iou": 92.64,
+            "hd95": 1.79
+          },
+          "baseline": {
+            "dice": 89.63,
+            "iou": 81.21,
+            "hd95": 6.47
+          }
+        }
+      }
+    },
+    {
+      "id": "sample-13",
+      "label": "Sample 13",
+      "regions": {
+        "apex": {
+          "relative_depth": 16,
+          "miraus": {
+            "dice": 96.19,
+            "iou": 92.65,
+            "hd95": 1.84
+          },
+          "baseline": {
+            "dice": 95.31,
+            "iou": 91.04,
+            "hd95": 2.4
+          }
+        },
+        "mid-gland": {
+          "relative_depth": 51,
+          "miraus": {
+            "dice": 96.25,
+            "iou": 92.76,
+            "hd95": 2.4
+          },
+          "baseline": {
+            "dice": 96.41,
+            "iou": 93.08,
+            "hd95": 4.05
+          }
+        },
+        "base": {
+          "relative_depth": 85,
+          "miraus": {
+            "dice": 93.36,
+            "iou": 87.55,
+            "hd95": 4.8
+          },
+          "baseline": {
+            "dice": 92.2,
+            "iou": 85.54,
+            "hd95": 5.48
+          }
+        }
+      }
+    },
+    {
+      "id": "sample-14",
+      "label": "Sample 14",
+      "regions": {
+        "apex": {
+          "relative_depth": 17,
+          "miraus": {
+            "dice": 78.05,
+            "iou": 64.0,
+            "hd95": 6.98
+          },
+          "baseline": {
+            "dice": 89.08,
+            "iou": 80.31,
+            "hd95": 4.8
+          }
+        },
+        "mid-gland": {
+          "relative_depth": 51,
+          "miraus": {
+            "dice": 96.89,
+            "iou": 93.97,
+            "hd95": 2.4
+          },
+          "baseline": {
+            "dice": 94.29,
+            "iou": 89.2,
+            "hd95": 5.06
+          }
+        },
+        "base": {
+          "relative_depth": 85,
+          "miraus": {
+            "dice": 61.3,
+            "iou": 44.2,
+            "hd95": 12.65
+          },
+          "baseline": {
+            "dice": 81.34,
+            "iou": 68.55,
+            "hd95": 9.67
+          }
+        }
+      }
+    },
+    {
+      "id": "sample-15",
+      "label": "Sample 15",
+      "regions": {
+        "apex": {
+          "relative_depth": 17,
+          "miraus": {
+            "dice": 95.73,
+            "iou": 91.8,
+            "hd95": 1.79
+          },
+          "baseline": {
+            "dice": 95.73,
+            "iou": 91.81,
+            "hd95": 2.26
+          }
+        },
+        "mid-gland": {
+          "relative_depth": 51,
+          "miraus": {
+            "dice": 95.85,
+            "iou": 92.04,
+            "hd95": 2.26
+          },
+          "baseline": {
+            "dice": 96.26,
+            "iou": 92.79,
+            "hd95": 2.26
+          }
+        },
+        "base": {
+          "relative_depth": 85,
+          "miraus": {
+            "dice": 67.96,
+            "iou": 51.47,
+            "hd95": 6.58
+          },
+          "baseline": {
+            "dice": 95.87,
+            "iou": 92.06,
+            "hd95": 1.6
+          }
+        }
+      }
+    }
+  ]
+}
