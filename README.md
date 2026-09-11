@@ -2,7 +2,7 @@
 
 **MRI-privileged learning for single-frame TRUS prostate segmentation**
 
-[Interactive Results](https://zeming-huang.github.io/MIRAUS/) | [μRegPro Dataset](https://muregpro.github.io/) | [MedSAM](https://github.com/bowang-lab/MedSAM)
+[Interactive Results](https://zeming-huang.github.io/MIRAUS/) | [μRegPro Dataset](https://doi.org/10.5281/zenodo.8004388) | [MedSAM](https://github.com/bowang-lab/MedSAM)
 
 MIRAUS uses paired MRI as privileged information during training to improve a lightweight single-frame TRUS segmentation model. MRI and the privileged teacher are removed after training; deployment requires only one TRUS frame and supports automatic full-image or box-assisted inference.
 
@@ -65,4 +65,6 @@ Code is distributed under the repository license and remains subject to the lice
 
 ## Acknowledgements
 
-MIRAUS builds on MedSAM, LiteMedSAM, TinyViT, MobileSAM, and Segment Anything. We thank their authors for releasing the corresponding research code.
+We thank the organizers and contributors of the [μRegPro challenge](https://doi.org/10.5281/zenodo.8004388) for making the paired prostate MRI--TRUS dataset publicly available. We also thank the [MedSAM team](https://github.com/bowang-lab/MedSAM) for releasing the open-source implementation and model resources that supported this work.
+
+MIRAUS also builds on LiteMedSAM, TinyViT, MobileSAM, and Segment Anything. We thank their authors for releasing the corresponding research code.
