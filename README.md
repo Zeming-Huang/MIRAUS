@@ -6,6 +6,16 @@
 
 MIRAUS uses paired MRI as privileged information during training to improve a lightweight single-frame TRUS segmentation model. MRI and the privileged teacher are removed after training; deployment requires only one TRUS frame and supports automatic full-image or box-assisted inference.
 
+## Framework
+
+<p align="center">
+  <a href="assets/miraus-framework.png">
+    <img src="assets/miraus-framework.png" alt="MIRAUS framework: MRI-privileged teacher pretraining, residual privileged transfer, and MRI-free single-frame TRUS deployment" width="100%">
+  </a>
+</p>
+
+The privileged teacher uses a local multi-slice MRI neighborhood during training and forms an MRI-informed feature through utility-aware aggregation. A residual adapter transfers the teacher-defined feature increment to the TRUS student. At deployment, the MRI branch and teacher are removed, leaving the same lightweight student for automatic full-image or clinician box-assisted segmentation.
+
 ## Interactive Results
 
 The [result explorer](https://zeming-huang.github.io/MIRAUS/) contains 15 anonymized μRegPro examples. Each example includes apex, mid-gland, and base frames with the manual reference, a TRUS-only baseline, MIRAUS, and the signed probability difference. The gallery contains favorable, representative, and difficult cases.
