@@ -7,12 +7,14 @@
 import os
 import re
 import random
+import hashlib
 import numpy as np
 import torch
 from torch.utils.data import Dataset
 import cv2
 from glob import glob
 from os.path import join, basename, isfile, normpath
+from .case_split import extract_case_id, normalize_case_ids, split_root_spec
 
 class PairedNpyDataset(Dataset):
     """
@@ -23,8 +25,7 @@ class PairedNpyDataset(Dataset):
     @staticmethod
     def _parse_case_slice(path):
         name = basename(str(path))
-        case_match = re.search(r"(case\d+)", name)
-        case_id = case_match.group(1) if case_match else os.path.splitext(name)[0]
+        case_id = extract_case_id(name) or os.path.splitext(name)[0]
         slice_match = re.search(r"case\d+[-_](\d+)", name)
         slice_index = int(slice_match.group(1)) if slice_match else 0
         return case_id, slice_index
@@ -104,9 +105,11 @@ class PairedNpyDataset(Dataset):
 
     def _build_mri_slice_index(self):
         self.mri_slices_by_case = {}
-        for mri_img_file in sorted(glob(join(self.mri_img_path, "*.npy"))):
+        for mri_img_file in self.mri_img_files:
             case_id, slice_index = self._parse_case_slice(mri_img_file)
-            mri_gt_file = normpath(join(self.mri_gt_path, basename(mri_img_file)))
+            if not self._case_allowed(case_id):
+                continue
+            mri_gt_file = self.mri_gt_by_name.get(basename(mri_img_file))
             if not isfile(mri_gt_file):
                 continue
             self.mri_slices_by_case.setdefault(case_id, []).append({
@@ -136,8 +139,8 @@ class PairedNpyDataset(Dataset):
         normalized_depth = trus_rank / float(trus_count - 1)
         return int(round(normalized_depth * (mri_count - 1)))
 
-    def _mri_window_entries(self, pair):
-        center_rank, selected_case_id = self._pairing_center_rank(pair)
+    def _mri_window_entries(self, pair, rng=None):
+        center_rank, selected_case_id = self._pairing_center_rank(pair, rng=rng)
         mri_entries = self.mri_slices_by_case.get(selected_case_id, [])
         if not mri_entries:
             return ([{
@@ -158,10 +161,11 @@ class PairedNpyDataset(Dataset):
             valid_mask.append(bool(valid))
         return window_entries, valid_mask
 
-    def _pairing_center_rank(self, pair):
+    def _pairing_center_rank(self, pair, rng=None):
         case_id = pair["case_id"]
         center_rank = int(pair.get("mri_center_rank", 0))
         mode = self.pairing_mode
+        rng = rng or random
 
         if mode == "normal":
             selected_case_id = case_id
@@ -174,14 +178,14 @@ class PairedNpyDataset(Dataset):
         elif mode == "same_patient_random":
             selected_case_id = case_id
             entries = self.mri_slices_by_case.get(selected_case_id, [])
-            center_rank = random.randint(0, max(len(entries) - 1, 0))
+            center_rank = rng.randint(0, max(len(entries) - 1, 0))
         elif mode == "different_patient_random":
             candidate_cases = [c for c in self.mri_slices_by_case.keys() if c != case_id]
             if not candidate_cases:
                 raise ValueError("different_patient_random requires at least two patients.")
-            selected_case_id = random.choice(candidate_cases)
+            selected_case_id = rng.choice(candidate_cases)
             entries = self.mri_slices_by_case.get(selected_case_id, [])
-            center_rank = random.randint(0, max(len(entries) - 1, 0))
+            center_rank = rng.randint(0, max(len(entries) - 1, 0))
         else:
             raise ValueError(f"Unknown pairing_mode: {mode}")
 
@@ -204,7 +208,12 @@ class PairedNpyDataset(Dataset):
         pairing_mode="normal",
         trus_feature_cache_dir=None,
         mri_feature_cache_dir=None,
+        include_cases=None,
+        exclude_cases=None,
+        foreground_only=False,
+        seed=2026,
         box_mode="gt",
+        trus_window_radius=0,
     ):
         """
         Args:
@@ -216,18 +225,26 @@ class PairedNpyDataset(Dataset):
         """
         # 规范化路径（处理Windows路径混合问题）
         # 如果是相对路径，先转换为绝对路径再规范化
-        if not os.path.isabs(trus_root):
-            trus_root = os.path.abspath(trus_root)
-        if not os.path.isabs(mri_root):
-            mri_root = os.path.abspath(mri_root)
-        self.trus_root = normpath(trus_root)
-        self.mri_root = normpath(mri_root)
+        self.trus_roots = split_root_spec(trus_root)
+        self.mri_roots = split_root_spec(mri_root)
+        if not self.trus_roots:
+            raise ValueError(f"TRUS root is empty: {trus_root}")
+        if not self.mri_roots:
+            raise ValueError(f"MRI root is empty: {mri_root}")
+        self.trus_root = ";".join(self.trus_roots)
+        self.mri_root = ";".join(self.mri_roots)
+        self.include_cases = normalize_case_ids(include_cases)
+        self.exclude_cases = normalize_case_ids(exclude_cases) or set()
+        self.foreground_only = bool(foreground_only)
+        self.seed = int(seed)
+        self.epoch = 0
+        self.box_mode = str(box_mode)
+        self.trus_window_radius = int(trus_window_radius)
+        if self.box_mode not in ("gt", "full_image"):
+            raise ValueError(f"Unknown box_mode: {self.box_mode}")
         self.image_size = image_size
         self.target_length = image_size
         self.bbox_shift = bbox_shift
-        if box_mode not in {"gt", "full_image"}:
-            raise ValueError(f"Unknown box_mode: {box_mode}")
-        self.box_mode = box_mode
         self.data_aug = data_aug
         self.mri_window_radius = int(mri_window_radius)
         self.slice_attention_mode = slice_attention_mode
@@ -240,19 +257,47 @@ class PairedNpyDataset(Dataset):
             raise ValueError("Feature cache cannot be used with data augmentation.")
         
         # 直接使用传入的路径，不重复添加通道
-        trus_gt_path = normpath(join(self.trus_root, 'gts'))
-        trus_img_path = normpath(join(self.trus_root, 'imgs'))
+        self.trus_gt_paths = [normpath(join(root, 'gts')) for root in self.trus_roots]
+        self.trus_img_paths = [normpath(join(root, 'imgs')) for root in self.trus_roots]
+        self.mri_gt_paths = [normpath(join(root, 'gts')) for root in self.mri_roots]
+        self.mri_img_paths = [normpath(join(root, 'imgs')) for root in self.mri_roots]
+        for data_path in [*self.trus_gt_paths, *self.trus_img_paths, *self.mri_gt_paths, *self.mri_img_paths]:
+            if not os.path.exists(data_path):
+                raise ValueError(f"Dataset path does not exist: {data_path}")
+        self.trus_img_by_name = {
+            basename(path): normpath(path)
+            for img_path in self.trus_img_paths
+            for path in sorted(glob(join(img_path, '*.npy')))
+        }
+        self.mri_img_by_name = {
+            basename(path): normpath(path)
+            for img_path in self.mri_img_paths
+            for path in sorted(glob(join(img_path, '*.npy')))
+        }
+        self.mri_gt_by_name = {
+            basename(path): normpath(path)
+            for gt_path in self.mri_gt_paths
+            for path in sorted(glob(join(gt_path, '*.npy')))
+        }
+        self.mri_img_files = sorted(self.mri_img_by_name.values())
+
+        trus_gt_path = self.trus_gt_paths[0]
+        trus_img_path = self.trus_img_paths[0]
         
         if not os.path.exists(trus_gt_path) or not os.path.exists(trus_img_path):
             raise ValueError(f"TRUS数据路径不存在: {trus_gt_path} 或 {trus_img_path}")
             
-        mri_gt_path = normpath(join(self.mri_root, 'gts'))
-        mri_img_path = normpath(join(self.mri_root, 'imgs'))
+        mri_gt_path = self.mri_gt_paths[0]
+        mri_img_path = self.mri_img_paths[0]
         if not os.path.exists(mri_gt_path) or not os.path.exists(mri_img_path):
             raise ValueError(f"MRI数据路径不存在: {mri_gt_path} 或 {mri_img_path}")
         
         # 获取所有TRUS标签文件
-        self.trus_gt_files = sorted(glob(join(trus_gt_path, '*.npy'), recursive=True))
+        self.trus_gt_files = [
+            normpath(path)
+            for gt_path in self.trus_gt_paths
+            for path in sorted(glob(join(gt_path, '*.npy'), recursive=True))
+        ]
         # 使用规范化后的路径变量
         self.trus_gt_path = trus_gt_path
         self.trus_img_path = trus_img_path
@@ -260,16 +305,23 @@ class PairedNpyDataset(Dataset):
         self.mri_img_path = mri_img_path
         self.trus_gt_files = [
             file for file in self.trus_gt_files
-            if isfile(normpath(join(self.trus_img_path, basename(file))))
+            if basename(file) in self.trus_img_by_name
+            and self._case_allowed(self._parse_case_slice(file)[0])
         ]
         self._build_trus_rank_index()
         self._build_trus_transition_targets()
+        if self.foreground_only:
+            self.trus_gt_files = [
+                file_path
+                for file_path in self.trus_gt_files
+                if self.trus_mask_area_by_file.get(normpath(file_path), 0.0) > 0
+            ]
         self._build_mri_slice_index()
         
         # 验证配对关系
         self.valid_pairs = []
         for trus_gt_file in self.trus_gt_files:
-            trus_img_file = normpath(join(self.trus_img_path, basename(trus_gt_file)))
+            trus_img_file = self.trus_img_by_name.get(basename(trus_gt_file))
             
             # 通过去除前缀来匹配MRI文件
             # TRUS_Prostate_case000000-000.npy -> case000000-000.npy
@@ -280,8 +332,8 @@ class PairedNpyDataset(Dataset):
                 # 如果格式不同,尝试其他匹配方式
                 mri_basename = trus_basename
             
-            mri_gt_file = normpath(join(self.mri_gt_path, mri_basename))
-            mri_img_file = normpath(join(self.mri_img_path, mri_basename))
+            mri_gt_file = self.mri_gt_by_name.get(mri_basename)
+            mri_img_file = self.mri_img_by_name.get(mri_basename)
             case_id, trus_slice_index = self._parse_case_slice(trus_gt_file)
             mri_center_rank = self._normalized_mri_center_rank(case_id, trus_gt_file)
             mapped_mri_entry = None
@@ -289,7 +341,12 @@ class PairedNpyDataset(Dataset):
                 mapped_mri_entry = self.mri_slices_by_case[case_id][mri_center_rank]
             
             # 检查所有对应文件是否存在（使用规范化路径）
-            if (isfile(normpath(trus_img_file)) and isfile(normpath(mri_gt_file)) and isfile(normpath(mri_img_file))):
+            if (
+                trus_img_file and mri_gt_file and mri_img_file
+                and isfile(normpath(trus_img_file))
+                and isfile(normpath(mri_gt_file))
+                and isfile(normpath(mri_img_file))
+            ):
                 _, mri_slice_index = self._parse_case_slice(mri_img_file)
                 self.valid_pairs.append({
                     'trus_img': trus_img_file,
@@ -305,7 +362,7 @@ class PairedNpyDataset(Dataset):
                         else mri_slice_index
                     ),
                 })
-            elif isfile(normpath(trus_img_file)) and mapped_mri_entry is not None:
+            elif trus_img_file and isfile(normpath(trus_img_file)) and mapped_mri_entry is not None:
                 self.valid_pairs.append({
                     'trus_img': trus_img_file,
                     'trus_gt': trus_gt_file,
@@ -323,8 +380,31 @@ class PairedNpyDataset(Dataset):
         if len(self.valid_pairs) == 0:
             raise ValueError("没有找到有效的配对数据!")
     
+    def _case_allowed(self, case_id):
+        if self.include_cases is not None and case_id not in self.include_cases:
+            return False
+        if case_id in self.exclude_cases:
+            return False
+        return True
+
     def __len__(self):
         return len(self.valid_pairs)
+
+    def set_epoch(self, epoch):
+        self.epoch = int(epoch)
+
+    def _rng(self, pair, stream):
+        key = "|".join(
+            [
+                str(self.seed),
+                str(self.epoch),
+                str(pair.get("case_id", "")),
+                str(pair.get("trus_slice_index", 0)),
+                str(stream),
+            ]
+        )
+        digest = hashlib.blake2b(key.encode("utf-8"), digest_size=8).digest()
+        return random.Random(int.from_bytes(digest, byteorder="little", signed=False))
 
     @staticmethod
     def _feature_cache_path(cache_dir, image_path):
@@ -342,6 +422,9 @@ class PairedNpyDataset(Dataset):
     
     def __getitem__(self, index):
         pair = self.valid_pairs[index]
+        pairing_rng = self._rng(pair, "mri_pairing")
+        bbox_rng = self._rng(pair, "bbox")
+        augmentation_rng = self._rng(pair, "augmentation")
         num_slices = int(self.trus_count_by_case.get(pair["case_id"], 1))
         trus_rank = int(self.trus_rank_by_file.get(normpath(pair["trus_gt"]), 0))
         relative_depth = trus_rank / float(max(num_slices - 1, 1))
@@ -351,7 +434,9 @@ class PairedNpyDataset(Dataset):
         trus_gt = np.load(pair['trus_gt'], 'r', allow_pickle=True)  # (H, W)
         
         # 加载MRI数据
-        mri_window_entries, mri_valid_mask = self._mri_window_entries(pair)
+        mri_window_entries, mri_valid_mask = self._mri_window_entries(
+            pair, rng=pairing_rng
+        )
         if self.use_feature_cache:
             trus_gt = np.uint8(trus_gt > 0)
             trus_img_tensor = self._load_cached_feature(self.trus_feature_cache_dir, pair["trus_img"])
@@ -365,19 +450,21 @@ class PairedNpyDataset(Dataset):
 
             trus_gt_tensor = torch.tensor(trus_gt[None, :, :]).long()
             y_indices, x_indices = np.where(trus_gt > 0)
-            H, W = trus_gt.shape
-            if self.box_mode == "full_image":
-                bboxes = np.array([0, 0, W - 1, H - 1])
-            elif len(y_indices) > 0:
+            if len(y_indices) > 0:
                 x_min, x_max = np.min(x_indices), np.max(x_indices)
                 y_min, y_max = np.min(y_indices), np.max(y_indices)
-                x_min = max(0, x_min - random.randint(0, self.bbox_shift))
-                x_max = min(W-1, x_max + random.randint(0, self.bbox_shift))
-                y_min = max(0, y_min - random.randint(0, self.bbox_shift))
-                y_max = min(H-1, y_max + random.randint(0, self.bbox_shift))
+                H, W = trus_gt.shape
+                x_min = max(0, x_min - bbox_rng.randint(0, self.bbox_shift))
+                x_max = min(W-1, x_max + bbox_rng.randint(0, self.bbox_shift))
+                y_min = max(0, y_min - bbox_rng.randint(0, self.bbox_shift))
+                y_max = min(H-1, y_max + bbox_rng.randint(0, self.bbox_shift))
                 bboxes = np.array([x_min, y_min, x_max, y_max])
             else:
+                H, W = trus_gt.shape
                 bboxes = np.array([0, 0, W-1, H-1])
+            if self.box_mode == "full_image":
+                H, W = trus_gt.shape
+                bboxes = np.array([0, 0, W - 1, H - 1])
 
             return {
                 "trus_image": trus_img_tensor,
@@ -429,7 +516,7 @@ class PairedNpyDataset(Dataset):
         # 数据增强 - 同时对MRI和TRUS应用相同的变换 (关闭数据增强)
         if self.data_aug:
             # 随机水平翻转
-            if random.random() > 0.5:
+            if augmentation_rng.random() > 0.5:
                 trus_img_3c = np.ascontiguousarray(np.flip(trus_img_3c, axis=1))
                 trus_gt = np.ascontiguousarray(np.flip(trus_gt, axis=1))
                 mri_img_3c = np.ascontiguousarray(np.flip(mri_img_3c, axis=1))
@@ -440,7 +527,7 @@ class PairedNpyDataset(Dataset):
                 mri_gt = np.ascontiguousarray(np.flip(mri_gt, axis=1))
             
             # 随机垂直翻转
-            if random.random() > 0.5:
+            if augmentation_rng.random() > 0.5:
                 trus_img_3c = np.ascontiguousarray(np.flip(trus_img_3c, axis=0))
                 trus_gt = np.ascontiguousarray(np.flip(trus_gt, axis=0))
                 mri_img_3c = np.ascontiguousarray(np.flip(mri_img_3c, axis=0))
@@ -469,23 +556,25 @@ class PairedNpyDataset(Dataset):
         trus_gt_tensor = torch.tensor(trus_gt[None, :, :]).long()  # (1, H, W)
         y_indices, x_indices = np.where(trus_gt > 0)
         
-        H, W = trus_gt.shape
-        if self.box_mode == "full_image":
-            bboxes = np.array([0, 0, W - 1, H - 1])
-        elif len(y_indices) > 0:
+        if len(y_indices) > 0:
             x_min, x_max = np.min(x_indices), np.max(x_indices)
             y_min, y_max = np.min(y_indices), np.max(y_indices)
             
             # 添加扰动 (训练时增加鲁棒性)
-            x_min = max(0, x_min - random.randint(0, self.bbox_shift))
-            x_max = min(W-1, x_max + random.randint(0, self.bbox_shift))
-            y_min = max(0, y_min - random.randint(0, self.bbox_shift))
-            y_max = min(H-1, y_max + random.randint(0, self.bbox_shift))
+            H, W = trus_gt.shape
+            x_min = max(0, x_min - bbox_rng.randint(0, self.bbox_shift))
+            x_max = min(W-1, x_max + bbox_rng.randint(0, self.bbox_shift))
+            y_min = max(0, y_min - bbox_rng.randint(0, self.bbox_shift))
+            y_max = min(H-1, y_max + bbox_rng.randint(0, self.bbox_shift))
             
             bboxes = np.array([x_min, y_min, x_max, y_max])
         else:
             # 如果没有前景,使用整个图像作为bbox
+            H, W = trus_gt.shape
             bboxes = np.array([0, 0, W-1, H-1])
+        if self.box_mode == "full_image":
+            H, W = trus_gt.shape
+            bboxes = np.array([0, 0, W - 1, H - 1])
         
         bboxes_tensor = torch.tensor(bboxes[None, None, ...]).float()  # (1, 1, 4)
         
@@ -531,4 +620,3 @@ class PairedNpyDataset(Dataset):
             'trus_gt': pair['trus_gt'],
             'mri_gt': pair['mri_gt']
         }
-

@@ -22,8 +22,29 @@ from datetime import datetime
 from segment_anything.modeling import MaskDecoder, PromptEncoder, TwoWayTransformer
 from tiny_vit_sam import TinyViT, CrossModalFeatureExtractor
 from enhanced_dual_modal import EnhancedMaskDecoder, EnhancedDualModalMedSAM_Lite
+from privileged_distillation import (
+    binary_iou,
+    compute_teacher_correctness_weight_map,
+    compute_privileged_feature_loss,
+    primary_logits_from_model_output,
+    reliability_weighted_mean,
+    set_student_only_trainable,
+)
+from prism_offline_distillation import (
+    configure_stage_trainability,
+    make_frozen_teacher,
+    offline_student_teacher_output,
+    require_effective_mmd,
+)
 from utils.paired_dataset import PairedNpyDataset
 from utils.efficient_paired_dataset import EfficientPairedNpyDataset
+from utils.case_split import (
+    list_case_ids_from_roots,
+    make_kfold_case_split,
+    normalize_case_ids,
+    root_spec_exists,
+    split_root_spec,
+)
 import cv2
 import torch.nn.functional as F
 
@@ -32,6 +53,38 @@ import argparse
 
 # %%
 parser = argparse.ArgumentParser()
+parser.add_argument(
+    "-distillation_stage",
+    choices=("joint", "teacher_pretrain", "student_distill"),
+    default="joint",
+    help="Training stage. student_distill requires a frozen teacher checkpoint.",
+)
+parser.add_argument(
+    "-teacher_checkpoint",
+    type=str,
+    default="",
+    help="Frozen teacher checkpoint used during student_distill.",
+)
+parser.add_argument(
+    "-student_only_finetune",
+    action="store_true",
+    help="Train only the student adapter and optional gate.",
+)
+parser.add_argument(
+    "-fixed_length_training",
+    action="store_true",
+    help="Disable early stopping and run the requested number of epochs.",
+)
+parser.add_argument(
+    "-foreground_only_training",
+    action="store_true",
+    help="Sample only gland-bearing frames during training.",
+)
+parser.add_argument(
+    "-skip_latest_checkpoint",
+    action="store_true",
+    help="Do not write a rolling latest checkpoint.",
+)
 parser.add_argument(
     "-trus_data_root", type=str, default="./data/npy/TRUS_MRI_paired_train_lesion/trus",
     help="Path to the TRUS data root."
@@ -49,8 +102,40 @@ parser.add_argument(
     help="Path to the validation MRI data root."
 )
 parser.add_argument(
+    "-cv_num_folds", type=int, default=0,
+    help="Enable case-level K-fold CV when >1. Data are filtered at load time; no fold data copies are created."
+)
+parser.add_argument(
+    "-cv_fold", type=int, default=-1,
+    help="Zero-based fold index used with -cv_num_folds."
+)
+parser.add_argument(
+    "-cv_inner_val_fraction", type=float, default=0.1,
+    help="Fraction of non-test cases reserved for inner validation/early stopping in each CV fold."
+)
+parser.add_argument(
+    "-cv_split_seed", type=int, default=2026,
+    help="Seed for deterministic case-level CV splits."
+)
+parser.add_argument(
+    "-include_cases", type=str, default="",
+    help="Optional comma/space/semicolon-separated case IDs to include when CV is disabled."
+)
+parser.add_argument(
+    "-exclude_cases", type=str, default="",
+    help="Optional comma/space/semicolon-separated case IDs to exclude when CV is disabled."
+)
+parser.add_argument(
     "-val_interval", type=int, default=1,
     help="Evaluate on validation set every N epochs."
+)
+parser.add_argument(
+    "--final_validation_only", action="store_true",
+    help="Skip validation/checkpoint selection until the final epoch."
+)
+parser.add_argument(
+    "-seed", type=int, default=2026,
+    help="Random seed used by Python, NumPy, and PyTorch."
 )
 parser.add_argument(
     "-pretrained_checkpoint", type=str, default="lite_medsam.pth",
@@ -58,17 +143,21 @@ parser.add_argument(
 )
 parser.add_argument(
     "-trus_pretrained_checkpoint", type=str, 
-    default="./checkpoints/trus_encoder.pth",
+    default="",
     help="Path to the TRUS pretrained checkpoint."
 )
 parser.add_argument(
     "-mri_pretrained_checkpoint", type=str,
-    default="./checkpoints/mri_encoder.pth",
+    default="",
     help="Path to the MRI pretrained checkpoint."
 )
 parser.add_argument(
     "-resume", type=str, default='workdir/dual_modal_latest.pth',
     help="Path to the checkpoint to continue training."
+)
+parser.add_argument(
+    "-initial_model_checkpoint", type=str, default="",
+    help="Load model weights only, without restoring epoch or optimizer state."
 )
 parser.add_argument(
     "-work_dir", type=str, default="./workdir/dual_modal_lesion",
@@ -91,16 +180,8 @@ parser.add_argument(
     help="Device to train on."
 )
 parser.add_argument(
-    "-seed", type=int, default=2026,
-    help="Random seed used by Python, NumPy, and PyTorch."
-)
-parser.add_argument(
     "-bbox_shift", type=int, default=5,
     help="Perturbation to bounding box coordinates during training."
-)
-parser.add_argument(
-    "-training_box_mode", choices=["gt", "full_image"], default="gt",
-    help="Prompt protocol used for both training and validation."
 )
 parser.add_argument(
     "-lr", type=float, default=0.0001,
@@ -160,6 +241,7 @@ parser.add_argument(
 parser.add_argument(
     "-ablation_mode", type=str, default=None,
     choices=[
+        "index_pairing",
         "original_index",
         "random_neighbor_sampling",
         "average_neighbor_fusion",
@@ -377,9 +459,32 @@ parser.add_argument(
     help="Student adapter 的隐藏通道数。"
 )
 parser.add_argument(
+    "-use_gated_student_adapter", action="store_true",
+    help="Use a TRUS-conditioned spatial gate on the student residual adapter."
+)
+parser.add_argument(
+    "-use_student_refinement_adapter",
+    action="store_true",
+    help="Add the zero-initialized refinement branch used by the publication student.",
+)
+parser.add_argument(
+    "-student_gate_init_bias", type=float, default=-1.5,
+    help="Initial student gate bias; -1.5 starts conservatively near 0.18."
+)
+parser.add_argument(
     "-distill_feat_weight", type=float, default=1.0,
     help="特征级蒸馏损失权重(Student decoder输入特征逼近Teacher,目标detach)。"
 )
+parser.add_argument(
+    "-distill_feature_mode", choices=["mse", "roi_residual_cosine"], default="mse",
+    help="Feature objective; roi_residual_cosine hallucinates the MRI-guided residual."
+)
+parser.add_argument(
+    "-distill_feature_scope", choices=["global", "box"], default="global",
+    help="Spatial support for roi_residual_cosine feature distillation."
+)
+parser.add_argument("-distill_cosine_weight", type=float, default=0.25)
+parser.add_argument("-distill_residual_weight", type=float, default=1.0)
 parser.add_argument(
     "-distill_kd_weight", type=float, default=1.0,
     help="logits级KD蒸馏损失权重(KL(Student||Teacher),目标detach)。"
@@ -392,6 +497,12 @@ parser.add_argument(
     "-teacher_loss_weight", type=float, default=1.0,
     help="Teacher路径分割损失权重gamma,保证蒸馏目标质量。"
 )
+parser.add_argument("-use_teacher_correctness_kd", action="store_true")
+parser.add_argument("-teacher_correctness_gamma_max", type=float, default=1.0)
+parser.add_argument("-teacher_correctness_min_weight", type=float, default=0.0)
+parser.add_argument("-teacher_correctness_gain_margin", type=float, default=0.0)
+parser.add_argument("-teacher_correctness_preserve_weight_scale", action="store_true")
+parser.add_argument("-teacher_correctness_use_slice_confidence", action="store_true")
 parser.add_argument(
     "-slice_attention_log_interval", type=int, default=50,
     help="Log SSCA diagnostics every N training steps. Set <=0 to disable."
@@ -464,6 +575,12 @@ parser.add_argument(
 )
 
 args = parser.parse_args()
+
+random.seed(args.seed)
+np.random.seed(args.seed)
+torch.manual_seed(args.seed)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(args.seed)
 if args.ablation_mode is not None:
     args.slice_attention_mode = args.ablation_mode
 
@@ -487,6 +604,13 @@ iou_loss_weight = args.iou_loss_weight
 seg_loss_weight = args.seg_loss_weight
 ce_loss_weight = args.ce_loss_weight
 mmd_loss_weight = args.mmd_loss_weight
+if args.distillation_stage == "student_distill" and not args.teacher_checkpoint:
+    parser.error("-teacher_checkpoint is required for -distillation_stage student_distill")
+require_effective_mmd(
+    stage=args.distillation_stage,
+    freeze_encoders=args.freeze_encoders,
+    mmd_loss_weight=mmd_loss_weight,
+)
 do_sancheck = args.sanity_check
 checkpoint = args.resume
 val_interval = args.val_interval
@@ -495,20 +619,40 @@ diagnostic_checkpoint_epochs = {
     if x.strip()
 }
 
-makedirs(work_dir, exist_ok=True)
-with open(join(work_dir, "training_config.json"), "w", encoding="utf-8") as config_file:
-    json.dump(
-        {"created_at": datetime.now().isoformat(), "args": vars(args)},
-        config_file,
-        indent=2,
-        sort_keys=True,
+cv_split = None
+train_include_cases = normalize_case_ids(args.include_cases)
+train_exclude_cases = normalize_case_ids(args.exclude_cases)
+val_include_cases = None
+test_include_cases = None
+if args.cv_num_folds > 1:
+    all_cv_cases = list_case_ids_from_roots(trus_data_root)
+    cv_split = make_kfold_case_split(
+        all_cv_cases,
+        num_folds=args.cv_num_folds,
+        fold=args.cv_fold,
+        seed=args.cv_split_seed,
+        inner_val_fraction=args.cv_inner_val_fraction,
     )
+    train_include_cases = set(cv_split["train_cases"])
+    val_include_cases = set(cv_split["val_cases"])
+    test_include_cases = set(cv_split["test_cases"])
+    train_exclude_cases = set(cv_split["val_cases"]) | set(cv_split["test_cases"])
+    print("=== Case-level CV split ===")
+    print(f"fold: {args.cv_fold}/{args.cv_num_folds - 1}, seed: {args.cv_split_seed}")
+    print(f"train cases ({len(cv_split['train_cases'])}): {cv_split['train_cases']}")
+    print(f"inner val cases ({len(cv_split['val_cases'])}): {cv_split['val_cases']}")
+    print(f"held-out test cases ({len(cv_split['test_cases'])}): {cv_split['test_cases']}")
+    print("===========================")
 
-random.seed(args.seed)
-np.random.seed(args.seed)
-torch.manual_seed(args.seed)
-if torch.cuda.is_available():
-    torch.cuda.manual_seed_all(args.seed)
+makedirs(work_dir, exist_ok=True)
+training_config = {
+    "script": "train_dual_modal.py",
+    "created_at": datetime.now().isoformat(timespec="seconds"),
+    "args": vars(args).copy(),
+    "case_split": cv_split,
+}
+with open(join(work_dir, "training_config.json"), "w", encoding="utf-8") as f:
+    json.dump(training_config, f, indent=2, sort_keys=True)
 
 # %%
 torch.cuda.empty_cache()
@@ -533,15 +677,7 @@ def show_box(box, ax):
     ax.add_patch(plt.Rectangle((x0, y0), w, h, edgecolor='blue', facecolor=(0,0,0,0), lw=2))
 
 def cal_iou(result, reference):
-    reduce_dims = tuple(range(1, result.ndim))
-    intersection = torch.count_nonzero(
-        torch.logical_and(result, reference), dim=reduce_dims
-    ).float()
-    union = torch.count_nonzero(
-        torch.logical_or(result, reference), dim=reduce_dims
-    ).float()
-    iou = torch.where(union > 0, intersection / union.clamp_min(1.0), 1.0)
-    return iou.unsqueeze(1)
+    return binary_iou(result, reference)
 
 @torch.no_grad()
 def compute_dice_score(pred_logits: torch.Tensor, gt: torch.Tensor) -> float:
@@ -845,6 +981,9 @@ medsam_lite_model = EnhancedDualModalMedSAM_Lite(
     beta_modulation_mix_max=args.beta_modulation_mix_max,
     use_privileged_distillation=args.use_privileged_distillation,
     student_adapter_hidden=args.student_adapter_hidden,
+    use_gated_student_adapter=args.use_gated_student_adapter,
+    student_gate_init_bias=args.student_gate_init_bias,
+    use_student_refinement_adapter=args.use_student_refinement_adapter,
 )
 
 # 加载预训练权重
@@ -853,32 +992,32 @@ def load_pretrained_weights(model, checkpoint_path, component_name):
     if isfile(checkpoint_path):
         print(f"Loading {component_name} pretrained weights from {checkpoint_path}")
         ckpt = torch.load(checkpoint_path, map_location="cpu")
-        
-        # 处理检查点格式
-        if 'model' in ckpt:
-            state_dict = ckpt['model']
-        else:
-            state_dict = ckpt
-            
+
         # 加载权重
         if component_name == "TRUS":
             # 加载TRUS编码器权重
-            trus_state_dict = {k.replace('image_encoder.', 'trus_encoder.'): v 
-                              for k, v in state_dict.items() 
-                              if k.startswith('image_encoder.')}
+            trus_state_dict = filter_checkpoint_state_dict_by_prefix(
+                ckpt,
+                "image_encoder.",
+                target_prefix="trus_encoder.",
+            )
             model.load_state_dict(trus_state_dict, strict=False)
             print("Loaded TRUS encoder weights")
         elif component_name == "MRI":
             # 加载MRI编码器权重
-            mri_state_dict = {k.replace('image_encoder.', 'mri_encoder.'): v 
-                             for k, v in state_dict.items() 
-                             if k.startswith('image_encoder.')}
+            mri_state_dict = filter_checkpoint_state_dict_by_prefix(
+                ckpt,
+                "image_encoder.",
+                target_prefix="mri_encoder.",
+            )
             model.load_state_dict(mri_state_dict, strict=False)
             print("Loaded MRI encoder weights")
         elif component_name == "SAM":
             # 加载SAM组件权重
-            sam_state_dict = {k: v for k, v in state_dict.items() 
-                             if k.startswith(('mask_decoder.', 'prompt_encoder.'))}
+            sam_state_dict = filter_checkpoint_state_dict_by_prefix(
+                ckpt,
+                ("mask_decoder.", "prompt_encoder."),
+            )
             model.load_state_dict(sam_state_dict, strict=False)
             print("Loaded SAM components weights")
     else:
@@ -889,12 +1028,42 @@ print("=== 开始加载预训练权重 ===")
 load_pretrained_weights(medsam_lite_model, trus_pretrained_checkpoint, "TRUS")
 load_pretrained_weights(medsam_lite_model, mri_pretrained_checkpoint, "MRI")
 load_pretrained_weights(medsam_lite_model, trus_pretrained_checkpoint, "SAM")
+if args.initial_model_checkpoint:
+    if not isfile(args.initial_model_checkpoint):
+        raise FileNotFoundError(
+            f"Initial model checkpoint not found: {args.initial_model_checkpoint}"
+        )
+    initial_payload = torch.load(args.initial_model_checkpoint, map_location="cpu")
+    initial_state = normalize_prism_checkpoint_state_dict(initial_payload)
+    missing, unexpected = medsam_lite_model.load_state_dict(initial_state, strict=False)
+    relevant_missing = [
+        key for key in missing
+        if not key.startswith(("student_gate.", "student_refinement_adapter."))
+    ]
+    if relevant_missing or unexpected:
+        print(
+            f"[INIT WARN] missing={relevant_missing[:12]}, unexpected={unexpected[:12]}"
+        )
+    print(f"[INIT] Loaded model weights from {args.initial_model_checkpoint}")
 print("=== 预训练权重加载完成 ===")
 
 def main():
     global best_loss
     medsam_lite_model_local = medsam_lite_model.to(device)
     medsam_lite_model_local.train()
+    offline_teacher = None
+    if args.distillation_stage == "student_distill":
+        teacher_payload = torch.load(
+            args.teacher_checkpoint,
+            map_location="cpu",
+            weights_only=False,
+        )
+        offline_teacher = make_frozen_teacher(
+            medsam_lite_model_local,
+            teacher_payload,
+            device=device,
+        )
+        print(f"[OFFLINE KD] Frozen teacher loaded from {args.teacher_checkpoint}")
 
     print(f"Dual-Modal MedSAM size: {sum(p.numel() for p in medsam_lite_model_local.parameters())}")
     model_state_keys = list(medsam_lite_model_local.state_dict().keys())
@@ -920,6 +1089,12 @@ def main():
     print(f"transition loss weight: {args.transition_loss_weight}")
     print(f"transition cls/reg weights: {args.transition_cls_loss_weight}/{args.transition_reg_loss_weight}")
     print(f"mmd_loss_weight: {mmd_loss_weight}")
+    print(f"teacher correctness KD enabled: {args.use_teacher_correctness_kd}")
+    print(f"teacher correctness gamma max: {args.teacher_correctness_gamma_max}")
+    print(f"teacher correctness min weight: {args.teacher_correctness_min_weight}")
+    print(f"teacher correctness gain margin: {args.teacher_correctness_gain_margin}")
+    print(f"teacher correctness preserves weight scale: {args.teacher_correctness_preserve_weight_scale}")
+    print(f"teacher correctness uses slice confidence: {args.teacher_correctness_use_slice_confidence}")
     print(f"DG-MMD lambda center/priv/min_priv: {args.dg_mmd_lambda_center}/{args.dg_mmd_lambda_priv}/{args.dg_mmd_min_priv_weight}")
     print(f"checkpoint selection rule: save best 2D Dice as dual_modal_best.pth and best online 3D Dice as dual_modal_best_3d.pth; final export uses {args.final_results_checkpoint}")
     print(f"model contains depth/DG-MMD parameter keys: {has_depth_or_dgmmd_keys} (presence does not mean branch is enabled)")
@@ -935,7 +1110,44 @@ def main():
     print(f"跨模态模块参数数量: {sum(p.numel() for p in medsam_lite_model_local.cross_modal_extractor.parameters())}")
     
     # 优化器设置 - 根据是否冻结编码器选择不同策略
-    if args.freeze_encoders:
+    if args.distillation_stage != "joint":
+        trainable_names = configure_stage_trainability(
+            medsam_lite_model_local,
+            stage=args.distillation_stage,
+            freeze_encoders=args.freeze_encoders,
+        )
+        trainable_params = [
+            parameter
+            for parameter in medsam_lite_model_local.parameters()
+            if parameter.requires_grad
+        ]
+        if not trainable_params:
+            raise RuntimeError(
+                f"No trainable parameters for stage {args.distillation_stage}"
+            )
+        optimizer = optim.AdamW(
+            trainable_params,
+            lr=lr,
+            weight_decay=weight_decay,
+        )
+        print(
+            f"[OFFLINE KD] stage={args.distillation_stage}; "
+            f"trainable tensors={len(trainable_names)}; "
+            f"parameters={sum(parameter.numel() for parameter in trainable_params)}"
+        )
+    elif args.student_only_finetune:
+        trainable_module_names = set_student_only_trainable(medsam_lite_model_local)
+        trainable_params = [
+            parameter
+            for parameter in medsam_lite_model_local.parameters()
+            if parameter.requires_grad
+        ]
+        optimizer = optim.AdamW(trainable_params, lr=lr, weight_decay=weight_decay)
+        print(
+            f"[OK] Student-only fine-tune: {trainable_module_names}; "
+            f"trainable parameters={sum(p.numel() for p in trainable_params)}"
+        )
+    elif args.freeze_encoders:
         # 只训练跨模态模块和SAM组件
         trainable_params = []
         trainable_params.extend(list(medsam_lite_model_local.cross_modal_extractor.parameters()))
@@ -1009,8 +1221,16 @@ def main():
         feature_cache_root = args.feature_cache_dir or join(work_dir, "feature_cache")
         trus_feature_cache_dir = join(feature_cache_root, "trus")
         mri_feature_cache_dir = join(feature_cache_root, "mri")
-        trus_image_paths = sorted(glob(join(trus_data_root, "imgs", "*.npy")))
-        mri_image_paths = sorted(glob(join(mri_data_root, "imgs", "*.npy")))
+        trus_image_paths = [
+            path
+            for root in split_root_spec(trus_data_root)
+            for path in sorted(glob(join(root, "imgs", "*.npy")))
+        ]
+        mri_image_paths = [
+            path
+            for root in split_root_spec(mri_data_root)
+            for path in sorted(glob(join(root, "imgs", "*.npy")))
+        ]
         print(f"[CACHE] Precomputing frozen encoder features: TRUS={len(trus_image_paths)}, MRI={len(mri_image_paths)}")
         cache_encoder_features(
             medsam_lite_model_local.trus_encoder,
@@ -1033,71 +1253,76 @@ def main():
     
     # 数据加载器 - 使用高效数据集
     train_dataset = EfficientPairedNpyDataset(
-        trus_data_root, mri_data_root, 
-        data_aug=False, 
+        trus_data_root, mri_data_root,
+        bbox_shift=bbox_shift,
+        data_aug=False,
         samples_per_epoch=args.samples_per_epoch,
         mri_window_radius=args.mri_window_radius,
         slice_attention_mode=args.slice_attention_mode,
         pairing_mode=args.pairing_mode,
         trus_feature_cache_dir=trus_feature_cache_dir,
         mri_feature_cache_dir=mri_feature_cache_dir,
-        box_mode=args.training_box_mode,
+        include_cases=train_include_cases,
+        exclude_cases=train_exclude_cases,
+        foreground_only=args.foreground_only_training,
+        seed=args.seed,
     )
+    if args.foreground_only_training:
+        empty_training_pairs = [
+            pair
+            for pair in train_dataset.full_dataset.valid_pairs
+            if train_dataset.full_dataset.trus_mask_area_by_file.get(
+                os.path.normpath(pair["trus_gt"]), 0.0
+            ) <= 0
+        ]
+        if empty_training_pairs:
+            raise RuntimeError(
+                f"foreground_only_training retained {len(empty_training_pairs)} empty masks"
+            )
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=False)  # 避免多进程问题
 
     # 恢复训练
     if checkpoint and isfile(checkpoint):
         print(f"Resuming from checkpoint {checkpoint}")
-        ckpt = torch.load(checkpoint)
+        ckpt = normalize_prism_training_checkpoint(torch.load(checkpoint))
         medsam_lite_model_local.load_state_dict(ckpt["model"], strict=True)
         optimizer.load_state_dict(ckpt["optimizer"])
         start_epoch = ckpt["epoch"]
-        best_loss = ckpt["loss"]
+        best_loss = get_resume_loss_from_checkpoint(ckpt)
         print(f"Loaded checkpoint from epoch {start_epoch}")
     else:
-        start_epoch = 0
+        # A fresh run starts before epoch zero, so num_epochs=N executes N epochs.
+        start_epoch = -1
         best_loss = 1e10
 
     # 创建TRUS单模态验证数据集（用于推理验证）
     print("创建TRUS单模态验证数据集...")
-    paired_npy_val = (
-        val_trus_data_root
-        and val_mri_data_root
-        and isdir(join(val_trus_data_root, "imgs"))
-        and isdir(join(val_trus_data_root, "gts"))
-        and isdir(join(val_mri_data_root, "imgs"))
-        and isdir(join(val_mri_data_root, "gts"))
-    )
-    if paired_npy_val:
-        print("Using deterministic paired NPY validation set.")
+    if cv_split is not None:
+        print("Using CV inner validation cases from paired .npy roots.")
         val_dataset = PairedNpyDataset(
-            val_trus_data_root,
-            val_mri_data_root,
+            trus_data_root,
+            mri_data_root,
+            bbox_shift=bbox_shift,
             data_aug=False,
             mri_window_radius=args.mri_window_radius,
             slice_attention_mode=args.slice_attention_mode,
             pairing_mode=args.pairing_mode,
-            box_mode=args.training_box_mode,
+            include_cases=val_include_cases,
+            foreground_only=False,
+            seed=args.seed,
         )
-        val_loader = DataLoader(
-            val_dataset,
-            batch_size=batch_size,
-            shuffle=False,
-            num_workers=0,
-            pin_memory=False,
-        )
-        print(f"Validation slices: {len(val_dataset)}")
-    elif val_trus_data_root and isdir(val_trus_data_root):
+        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=False)
+        print(f"CV train samples: {len(train_dataset)}, inner validation slices: {len(val_dataset)}")
+    elif val_trus_data_root and root_spec_exists(val_trus_data_root):
         # 使用独立验证集
         print("使用独立TRUS验证集...")
         
         # 创建单模态TRUS验证数据集
         class SingleModalTRUSDataset(Dataset):
-            def __init__(self, trus_root, image_size=256, bbox_shift=5, box_mode="gt"):
+            def __init__(self, trus_root, image_size=256, bbox_shift=5):
                 self.trus_root = trus_root
                 self.image_size = image_size
                 self.bbox_shift = bbox_shift
-                self.box_mode = box_mode
                 
                 # 查找TRUS数据 - 验证集使用.npz文件
                 self.trus_files = sorted(glob(join(trus_root, "*.npz")))
@@ -1141,10 +1366,7 @@ def main():
                 
                 # 生成边界框
                 y_indices, x_indices = np.where(trus_gt > 0)
-                if self.box_mode == "full_image":
-                    x_min, x_max = 0, trus_img.shape[1] - 1
-                    y_min, y_max = 0, trus_img.shape[0] - 1
-                elif len(x_indices) == 0:
+                if len(x_indices) == 0:
                     # 如果没有前景，使用整个图像
                     x_min, x_max = 0, trus_img.shape[1]
                     y_min, y_max = 0, trus_img.shape[0]
@@ -1154,11 +1376,10 @@ def main():
                 
                 # 添加扰动
                 H, W = trus_img.shape[:2]
-                if self.box_mode != "full_image":
-                    x_min = max(0, x_min - self.bbox_shift)
-                    y_min = max(0, y_min - self.bbox_shift)
-                    x_max = min(W, x_max + self.bbox_shift)
-                    y_max = min(H, y_max + self.bbox_shift)
+                x_min = max(0, x_min - self.bbox_shift)
+                y_min = max(0, y_min - self.bbox_shift)
+                x_max = min(W, x_max + self.bbox_shift)
+                y_max = min(H, y_max + self.bbox_shift)
                 
                 bbox = np.array([x_min, y_min, x_max, y_max])
                 
@@ -1175,11 +1396,7 @@ def main():
                 }
         
         # 增加验证样本数量 - 每个3D体积采样多个切片
-        val_dataset = SingleModalTRUSDataset(
-            val_trus_data_root,
-            bbox_shift=bbox_shift,
-            box_mode=args.training_box_mode,
-        )
+        val_dataset = SingleModalTRUSDataset(val_trus_data_root, bbox_shift=bbox_shift)
         # 通过重复采样增加验证样本数量
         val_dataset_multiplied = torch.utils.data.ConcatDataset([val_dataset] * 5)  # 每个体积采样5次
         val_loader = DataLoader(val_dataset_multiplied, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=False)  # 避免多进程问题
@@ -1557,6 +1774,7 @@ def main():
         # 用于计算3D Dice：收集所有预测和GT
         all_pred_3d = []
         all_gt_3d = []
+        case_dice = CaseDiceAccumulator()
         
         with torch.no_grad():
             for batch in val_loader:
@@ -1565,7 +1783,21 @@ def main():
                 boxes = batch["bboxes"].to(device)
                 
                 # 单模态TRUS推理（不传入MRI）
-                logits_pred, iou_pred = model(trus_image, None, boxes, training=False)
+                if args.distillation_stage == "teacher_pretrain":
+                    teacher_output = model.forward_teacher(
+                        trus_image,
+                        batch["mri_image"].to(device),
+                        boxes=boxes,
+                        mask_gt=gt2D,
+                        mri_valid_mask=batch.get("mri_valid_mask"),
+                        relative_depth=batch.get("relative_depth"),
+                    )
+                    logits_pred = teacher_output["logits_teacher"]
+                    iou_pred = teacher_output["iou_teacher"]
+                else:
+                    logits_pred, iou_pred = model(
+                        trus_image, None, boxes, training=False
+                    )
                 
                 # 计算损失（不包含MMD loss，因为推理时没有MRI）
                 l_seg = seg_loss(logits_pred, gt2D)
@@ -1603,6 +1835,14 @@ def main():
                 # 收集3D数据（用于计算3D Dice）
                 all_pred_3d.append(pred_binary.cpu())
                 all_gt_3d.append(gt_binary.cpu())
+                case_dice.update(
+                    pred_binary,
+                    gt_binary,
+                    batch.get(
+                        "case_id",
+                        [f"batch-{len(all_pred_3d)}"] * pred_binary.shape[0],
+                    ),
+                )
         
         # 计算3D Dice（所有batch合并计算）
         if len(all_pred_3d) > 0:
@@ -1615,7 +1855,7 @@ def main():
             if union_3d == 0:
                 dice_3d = 1.0 if intersection_3d == 0 else 0.0
             else:
-                dice_3d = (2.0 * intersection_3d / union_3d).item()
+                dice_3d = case_dice.mean()
         else:
             dice_3d = 0.0
         
@@ -1634,7 +1874,6 @@ def main():
             mri_window_radius=args.mri_window_radius,
             slice_attention_mode=args.slice_attention_mode,
             pairing_mode=args.pairing_mode,
-            box_mode=args.training_box_mode,
         )
         val_pair_loader = DataLoader(val_pair_dataset, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=False)
         radius = args.mri_window_radius
@@ -1694,11 +1933,7 @@ def main():
                         transition_valid=batch.get("transition_valid"),
                         relative_depth=batch.get("relative_depth"),
                     )
-                    logits_pred = (
-                        model_out["logits_teacher"]
-                        if isinstance(model_out, dict)
-                        else model_out[0]
-                    )
+                    logits_pred = primary_logits_from_model_output(model_out)
                     pred_binary = (torch.sigmoid(logits_pred) > 0.5).float()
                     gt_binary = gt2D.float()
                     if gt_binary.dim() == 3:
@@ -1788,6 +2023,23 @@ def main():
     best_val_dice_3d = -1.0
     early_stopping_counter = 0
     best_loss = float('inf')
+
+    def make_checkpoint_payload(epoch, train_loss, val_loss, val_dice, val_iou, val_dice_3d):
+        return {
+            "model": medsam_lite_model_local.state_dict(),
+            "epoch": epoch,
+            "optimizer": optimizer.state_dict(),
+            "train_loss": train_loss,
+            "val_loss": val_loss,
+            "val_dice": val_dice,
+            "val_iou": val_iou,
+            "val_dice_3d": val_dice_3d,
+            "best_val_loss": best_val_loss,
+            "best_val_dice": best_val_dice,
+            "best_val_iou": best_val_iou,
+            "best_val_dice_3d": best_val_dice_3d,
+            "training_config": training_config,
+        }
     
     # 损失权重字典
     loss_weights = {
@@ -2169,7 +2421,7 @@ def main():
             return torch.zeros((), device=device)
         return loss_value.to(device) if torch.is_tensor(loss_value) else torch.tensor(loss_value, device=device)
 
-    def compute_distillation_losses(out, gt2D, model):
+    def compute_distillation_losses(out, gt2D, model, boxes=None):
         """从双路径输出计算总损失。out为模型forward返回的dict(特权蒸馏)或旧式tuple。
         返回 (total_loss, log_dict)。"""
         # 兼容:若关闭蒸馏(旧式tuple),退回原逻辑
@@ -2206,12 +2458,31 @@ def main():
         l_ce_t = ce_loss(logits_t, gt_f)
         iou_gt_t = cal_iou(torch.sigmoid(logits_t) > 0.5, gt2D.bool())
         l_iou_t = iou_loss(iou_t, iou_gt_t)
-        loss_teacher = args.teacher_loss_weight * (
-            seg_loss_weight * l_seg_t + ce_loss_weight * l_ce_t + iou_loss_weight * l_iou_t
-        )
+        if args.distillation_stage == "student_distill":
+            loss_teacher = logits_s.new_zeros(())
+        else:
+            loss_teacher = args.teacher_loss_weight * (
+                seg_loss_weight * l_seg_t + ce_loss_weight * l_ce_t + iou_loss_weight * l_iou_t
+            )
 
-        # --- 特征级蒸馏:F_student 逼近 F_teacher(detach,防止塌缩) ---
-        loss_feat = args.distill_feat_weight * F.mse_loss(f_s, f_t.detach())
+        # Feature-level privileged transfer. The publication configuration uses
+        # the Smooth-L1 teacher increment through roi_residual_cosine.
+        privileged_details = None
+        if args.distill_feature_mode == "roi_residual_cosine":
+            privileged_details = compute_privileged_feature_loss(
+                student_feat=f_s,
+                teacher_feat=f_t,
+                trus_feat=out["feat_trus"],
+                predicted_residual=out["student_residual"],
+                boxes=boxes,
+                image_hw=(256, 256),
+                use_roi=args.distill_feature_scope == "box",
+                cosine_weight=args.distill_cosine_weight,
+                residual_weight=args.distill_residual_weight,
+            )
+            loss_feat = args.distill_feat_weight * privileged_details["total"]
+        else:
+            loss_feat = args.distill_feat_weight * F.mse_loss(f_s, f_t.detach())
 
         # --- logits级KD:二值分割用基于sigmoid的软标签蒸馏,温度T ---
         T = max(args.distill_kd_temp, 1e-4)
@@ -2222,8 +2493,11 @@ def main():
         )
 
         # --- 辅助:纯mmd(乘mmd_weight) + SSCA其余已加权项(直接加,不再二次乘) + slice_corr ---
-        loss_aux = mmd_loss_weight * mmd_loss + aux_extra
-        loss_aux = loss_aux + args.slice_corr_loss_weight * current_slice_corr_loss(model)
+        if args.distillation_stage == "student_distill":
+            loss_aux = logits_s.new_zeros(())
+        else:
+            loss_aux = mmd_loss_weight * mmd_loss + aux_extra
+            loss_aux = loss_aux + args.slice_corr_loss_weight * current_slice_corr_loss(model)
 
         total = loss_student + loss_teacher + loss_feat + loss_kd + loss_aux
         log = {
@@ -2233,9 +2507,116 @@ def main():
             "logit_kd": float(loss_kd.detach()),
             "mmd": float(mmd_loss.detach()) if torch.is_tensor(mmd_loss) else float(mmd_loss),
         }
+        if privileged_details is not None:
+            log.update(
+                {
+                    "feat_weight_mean": float(privileged_details["weight_mean"]),
+                    "feat_smooth_l1": float(privileged_details["feature_smooth_l1"].detach()),
+                    "residual_smooth_l1": float(privileged_details["residual_smooth_l1"].detach()),
+                    "feat_cosine": float(privileged_details["cosine"].detach()),
+                    "student_gate_mean": float(out["student_gate"].detach().mean()),
+                }
+            )
         return total, log
 
+    def compute_teacher_pretrain_losses(out, gt2D):
+        logits = out["logits_teacher"]
+        iou_prediction = out["iou_teacher"]
+        gt_float = gt2D.float()
+        dice_term = seg_loss(logits, gt2D)
+        bce_term = ce_loss(logits, gt_float)
+        iou_target = cal_iou(torch.sigmoid(logits) > 0.5, gt2D.bool())
+        iou_term = iou_loss(iou_prediction, iou_target)
+        mmd = out.get("mmd_loss", logits.new_zeros(()))
+        aux = out.get("aux_extra", logits.new_zeros(()))
+        total = (
+            seg_loss_weight * dice_term
+            + ce_loss_weight * bce_term
+            + iou_loss_weight * iou_term
+            + mmd_loss_weight * mmd
+            + aux
+        )
+        return total, {
+            "seg_s": 0.0,
+            "seg_t": float(dice_term.detach()),
+            "feat_kd": 0.0,
+            "logit_kd": 0.0,
+            "kd_weight_mean": 0.0,
+            "feat_weight_mean": 0.0,
+            "feat_smooth_l1": 0.0,
+            "residual_smooth_l1": 0.0,
+            "feat_cosine": 0.0,
+            "student_gate_mean": 0.0,
+            "mmd": float(mmd.detach()) if torch.is_tensor(mmd) else float(mmd),
+        }
+
+    def forward_training_stage(trus_image, mri_image, gt2D, boxes, batch):
+        common = {
+            "trus_image": trus_image,
+            "mri_image": mri_image,
+            "gt2D": gt2D,
+            "bboxes": boxes,
+            "mri_valid_mask": batch.get("mri_valid_mask"),
+            "transition_target": batch.get("transition_target"),
+            "transition_label": batch.get("transition_label"),
+            "transition_valid": batch.get("transition_valid"),
+            "relative_depth": batch.get("relative_depth"),
+        }
+        if args.distillation_stage == "teacher_pretrain":
+            output = medsam_lite_model_local.forward_teacher(
+                trus_image,
+                mri_image,
+                boxes=boxes,
+                mask_gt=gt2D,
+                mri_valid_mask=common["mri_valid_mask"],
+                transition_target=common["transition_target"],
+                transition_label=common["transition_label"],
+                transition_valid=common["transition_valid"],
+                relative_depth=common["relative_depth"],
+            )
+            return output, compute_teacher_pretrain_losses(output, gt2D)
+        if args.distillation_stage == "student_distill":
+            output = offline_student_teacher_output(
+                medsam_lite_model_local,
+                offline_teacher,
+                common,
+            )
+            return output, compute_distillation_losses(
+                output,
+                gt2D,
+                medsam_lite_model_local,
+                boxes=boxes,
+            )
+        output = medsam_lite_model_local(
+            trus_image,
+            mri_image,
+            boxes,
+            training=True,
+            mask_gt=gt2D,
+            mri_valid_mask=common["mri_valid_mask"],
+            transition_target=common["transition_target"],
+            transition_label=common["transition_label"],
+            transition_valid=common["transition_valid"],
+            relative_depth=common["relative_depth"],
+        )
+        return output, compute_distillation_losses(
+            output,
+            gt2D,
+            medsam_lite_model_local,
+            boxes=boxes,
+        )
+
     for epoch in range(start_epoch + 1, num_epochs):
+        if args.student_only_finetune:
+            medsam_lite_model_local.eval()
+            if medsam_lite_model_local.student_refinement_adapter is not None:
+                medsam_lite_model_local.student_refinement_adapter.train()
+            else:
+                medsam_lite_model_local.student_adapter.train()
+            if medsam_lite_model_local.student_gate is not None:
+                medsam_lite_model_local.student_gate.train()
+        else:
+            medsam_lite_model_local.train()
         # 开始新epoch，重新生成随机样本
         train_dataset.new_epoch()
         ssca_module = getattr(getattr(medsam_lite_model_local, "cross_modal_extractor", None), "ssca", None)
@@ -2245,6 +2626,7 @@ def main():
         print(f"Epoch {epoch}: 使用{epoch_info['current_epoch_samples']}个样本 (利用率: {epoch_info['utilization_rate']:.1f}%)")
         
         epoch_loss = [1e10 for _ in range(len(train_loader))]
+        epoch_distill_sums = {}
         epoch_start_time = time()
         pbar = tqdm(train_loader)
         
@@ -2304,14 +2686,50 @@ def main():
                 loss.backward()
                 optimizer.step()
                 optimizer.zero_grad()
-            
+
+            for key, value in _loss_log.items():
+                epoch_distill_sums[key] = epoch_distill_sums.get(key, 0.0) + float(value)
             pbar.set_description(f"Epoch {epoch} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}, loss: {loss.item():.4f}")
 
         epoch_end_time = time()
         epoch_loss_reduced = sum(epoch_loss) / len(epoch_loss)
         train_losses.append(epoch_loss_reduced)
+        epoch_distill_means = {
+            key: value / max(len(train_loader), 1)
+            for key, value in epoch_distill_sums.items()
+        }
+        diagnostics_path = join(work_dir, "distillation_diagnostics.csv")
+        diagnostics_row = {"epoch": epoch, **epoch_distill_means}
+        with open(diagnostics_path, "a", newline="", encoding="utf-8") as diagnostics_file:
+            writer = csv.DictWriter(diagnostics_file, fieldnames=list(diagnostics_row.keys()))
+            if diagnostics_file.tell() == 0:
+                writer.writeheader()
+            writer.writerow(diagnostics_row)
+        print(f"Epoch {epoch} distillation diagnostics: {epoch_distill_means}")
         
         # 验证
+        if args.final_validation_only and epoch < num_epochs - 1:
+            if args.lr_scheduler != "plateau":
+                lr_scheduler.step()
+            if not args.skip_latest_checkpoint:
+                torch.save(
+                    {
+                        "model": medsam_lite_model_local.state_dict(),
+                        "epoch": epoch,
+                        "optimizer": optimizer.state_dict(),
+                        "train_loss": epoch_loss_reduced,
+                        "loss": epoch_loss_reduced,
+                        "training_config": training_config,
+                    },
+                    join(work_dir, "dual_modal_latest.pth"),
+                )
+            print(
+                f"Epoch {epoch}: Train Loss = {epoch_loss_reduced:.4f}; "
+                "validation deferred to the final epoch."
+            )
+            summarize_slice_attention_epoch(epoch)
+            continue
+
         val_loss, val_dice, val_iou, val_dice_3d = validate_model(medsam_lite_model_local, val_loader, device, loss_weights)
         val_losses.append(val_loss)
         val_dices.append(val_dice)
@@ -2352,23 +2770,14 @@ def main():
         else:
             early_stopping_counter += 1
             
+        is_best_dice = False
+        is_best_3d = False
+
         # 基于Dice保存最佳模型（独立于早停逻辑）
         if val_dice > best_val_dice:
             print(f"New best validation Dice: {best_val_dice:.4f} -> {val_dice:.4f}, Loss: {val_loss:.4f}, IoU: {val_iou:.4f}, Dice_3D: {val_dice_3d:.4f}")
             best_val_dice = val_dice
-            
-            # 保存最佳模型
-            save_obj["best_val_loss"] = best_val_loss
-            save_obj["best_val_dice"] = best_val_dice
-            save_obj["best_val_iou"] = best_val_iou
-            save_obj["best_val_dice_3d"] = best_val_dice_3d
-            torch.save(save_obj, join(work_dir, "dual_modal_best.pth"))
-            
-            # 生成最佳Dice时的完整验证结果（基于验证集评估）
-            if val_trus_data_root and isdir(val_trus_data_root) and not args.no_best_result_generation:
-                print(f"[INFO] 生成最佳验证集Dice ({val_dice:.4f}, epoch {epoch}) 时的完整结果...")
-                print(f"       (使用固定目录名，直接覆盖旧结果)")
-                generate_validation_results(medsam_lite_model_local, val_trus_data_root, device, work_dir, epoch, val_dice, bbox_shift)
+            is_best_dice = True
         
         # 更新最佳IoU和3D Dice（仅记录，不保存模型）
         if val_iou > best_val_iou:
@@ -2378,13 +2787,37 @@ def main():
         if val_dice_3d > best_val_dice_3d:
             print(f"New best validation 3D Dice: {best_val_dice_3d:.4f} -> {val_dice_3d:.4f}, Dice: {val_dice:.4f}, IoU: {val_iou:.4f}")
             best_val_dice_3d = val_dice_3d
-            save_obj["best_val_loss"] = best_val_loss
-            save_obj["best_val_dice"] = best_val_dice
-            save_obj["best_val_iou"] = best_val_iou
-            save_obj["best_val_dice_3d"] = best_val_dice_3d
+            is_best_3d = True
+
+        # 保存检查点。必须在所有best指标更新之后构造payload，否则best checkpoint元数据会落后一轮。
+        save_obj = make_checkpoint_payload(
+            epoch,
+            epoch_loss_reduced,
+            val_loss,
+            val_dice,
+            val_iou,
+            val_dice_3d,
+        )
+        torch.save(save_obj, join(work_dir, "dual_modal_latest.pth")) if not args.skip_latest_checkpoint else None
+        if epoch in diagnostic_checkpoint_epochs:
+            torch.save(save_obj, join(work_dir, f"dual_modal_epoch_{epoch}.pth"))
+
+        if is_best_dice:
+            torch.save(save_obj, join(work_dir, "dual_modal_best.pth"))
+
+            # 生成最佳Dice时的完整验证结果（基于验证集评估）
+            if val_trus_data_root and isdir(val_trus_data_root) and not args.no_best_result_generation:
+                print(f"[INFO] 生成最佳验证集Dice ({val_dice:.4f}, epoch {epoch}) 时的完整结果...")
+                print(f"       (使用固定目录名，直接覆盖旧结果)")
+                generate_validation_results(medsam_lite_model_local, val_trus_data_root, device, work_dir, epoch, val_dice, bbox_shift)
+
+        if is_best_3d:
             torch.save(save_obj, join(work_dir, "dual_modal_best_3d.pth"))
         
-        if early_stopping_counter >= args.early_stopping_patience:
+        if (
+            not args.fixed_length_training
+            and early_stopping_counter >= args.early_stopping_patience
+        ):
             summarize_slice_attention_epoch(epoch)
             print(f"Early stopping triggered at epoch {epoch}")
             print(f"Best validation loss: {best_val_loss:.4f}")
@@ -2433,7 +2866,7 @@ def main():
         best_path = join(work_dir, checkpoint_name)
         if isfile(best_path):
             print(f"[INFO] Loading best checkpoint for output generation: {best_path}")
-            ckpt = torch.load(best_path, map_location=device)
+            ckpt = normalize_prism_training_checkpoint(torch.load(best_path, map_location=device))
             medsam_lite_model_local.load_state_dict(ckpt["model"], strict=True)
             metric = ckpt.get("val_dice_3d", best_val_dice_3d) if args.final_results_checkpoint == "best_3d" else ckpt.get("val_dice", best_val_dice)
             return ckpt.get("epoch", -1), metric

@@ -10,6 +10,7 @@
 # --------------------------------------------------------
 
 import itertools
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -749,9 +750,11 @@ class MMDLoss(nn.Module):
         if fix_sigma:
             bandwidth = fix_sigma
         else:
-            bandwidth = torch.sum(L2_distance.data) / (n_samples ** 2 - n_samples)
+            bandwidth = torch.sum(L2_distance.data) / max(n_samples ** 2 - n_samples, 1)
+            bandwidth = bandwidth.clamp_min(1e-6)
         
-        bandwidth /= kernel_mul ** (kernel_num // 2)
+        bandwidth = bandwidth / kernel_mul ** (kernel_num // 2)
+        bandwidth = bandwidth.clamp_min(1e-6)
         bandwidth_list = [bandwidth * (kernel_mul ** i) for i in range(kernel_num)]
         kernel_val = [torch.exp(-L2_distance / bandwidth_temp) for bandwidth_temp in bandwidth_list]
         return sum(kernel_val)
@@ -1009,7 +1012,7 @@ class LinearFusion(nn.Module):
         w = torch.sigmoid(self.fusion_weight)
         if confidence is not None:
             w = w * confidence.view(-1, 1, 1, 1).clamp(0.0, 1.0)
-        fused_feat = w * original_trus + (1 - w) * enhanced_trus
+        fused_feat = (1 - w) * original_trus + w * enhanced_trus
         if return_gate:
             if not torch.is_tensor(w) or w.dim() == 0:
                 w = torch.ones(
@@ -1754,6 +1757,10 @@ class CrossModalFeatureExtractor(nn.Module):
         content_logit_scale_init=1.0,
         disable_transition_gate_without_supervision=True,
         mmd_use_raw_mri_target=True,
+        use_spatial_fusion_gate=False,
+        spatial_gate_conf_floor=0.5,
+        use_foreground_mmd=False,
+        foreground_mmd_min_tokens=8,
     ):
         super().__init__()
         self.mmd_weight = mmd_weight

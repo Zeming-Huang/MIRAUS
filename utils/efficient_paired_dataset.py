@@ -29,7 +29,12 @@ class EfficientPairedNpyDataset(Dataset):
         pairing_mode="normal",
         trus_feature_cache_dir=None,
         mri_feature_cache_dir=None,
+        include_cases=None,
+        exclude_cases=None,
+        foreground_only=False,
+        seed=2026,
         box_mode="gt",
+        trus_window_radius=0,
     ):
         """
         samples_per_epoch: 如果为None，使用所有样本
@@ -58,7 +63,13 @@ class EfficientPairedNpyDataset(Dataset):
         self.pairing_mode = pairing_mode
         self.trus_feature_cache_dir = trus_feature_cache_dir
         self.mri_feature_cache_dir = mri_feature_cache_dir
-        self.box_mode = box_mode
+        self.include_cases = include_cases
+        self.exclude_cases = exclude_cases
+        self.foreground_only = bool(foreground_only)
+        self.seed = int(seed)
+        self.epoch = 0
+        self.box_mode = str(box_mode)
+        self.trus_window_radius = int(trus_window_radius)
         
         # 使用原始数据集获取所有文件列表
         self.full_dataset = PairedNpyDataset(
@@ -72,7 +83,12 @@ class EfficientPairedNpyDataset(Dataset):
             pairing_mode=self.pairing_mode,
             trus_feature_cache_dir=self.trus_feature_cache_dir,
             mri_feature_cache_dir=self.mri_feature_cache_dir,
+            include_cases=self.include_cases,
+            exclude_cases=self.exclude_cases,
+            foreground_only=self.foreground_only,
+            seed=self.seed,
             box_mode=self.box_mode,
+            trus_window_radius=self.trus_window_radius,
         )
         self.total_samples = len(self.full_dataset)
         
@@ -89,17 +105,23 @@ class EfficientPairedNpyDataset(Dataset):
         print(f"  - 每epoch样本数: {actual_samples} ({'全部' if actual_samples == self.total_samples else f'{utilization:.1f}%'})")
         
         # 为当前epoch生成随机索引
+        self.set_epoch(self.epoch + 1)
+
+    def set_epoch(self, epoch):
+        self.epoch = int(epoch)
+        self.full_dataset.set_epoch(self.epoch)
         self.current_epoch_indices = self._generate_epoch_indices()
         
     def _generate_epoch_indices(self):
+        rng = random.Random(self.seed + 1000003 * self.epoch)
         """为当前epoch生成随机索引"""
         if self.samples_per_epoch == float('inf') or self.samples_per_epoch >= self.total_samples:
             # 如果需要的样本数大于等于总样本数，使用所有样本并打乱
             indices = list(range(self.total_samples))
-            random.shuffle(indices)
+            rng.shuffle(indices)
         else:
             # 随机选择指定数量的样本（不排序，保持随机顺序）
-            indices = random.sample(range(self.total_samples), self.samples_per_epoch)
+            indices = rng.sample(range(self.total_samples), self.samples_per_epoch)
         
         return indices  # 不排序，保持随机顺序以提高数据多样性
     

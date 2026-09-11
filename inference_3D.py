@@ -58,7 +58,7 @@ parser.add_argument(
     type=str,
     default='student',
     choices=['student', 'student_blend', 'train_consistent', 'self_attn', 'zero_teacher_attn'],
-    help='PRISM inference path: student (推荐) uses TRUS + student_adapter, '
+    help='MIRAUS inference path: student uses TRUS + student_adapter, '
          '与特权蒸馏训练的Student路径完全一致; '
          'train_consistent uses only TRUS encoder output; '
          'self_attn applies cross_modal_extractor(trus_feat, trus_feat); '
@@ -622,7 +622,7 @@ else:
     # 如果是直接的模型权重
     model_state_dict = medsam_lite_checkpoint
 
-# 兼容旧版 PRISM checkpoint 命名:
+# Compatibility with legacy PRISM checkpoint names:
 # cross_modal_extractor.adaptive_fusion.* -> cross_modal_extractor.fusion.*
 if use_dual_modal:
     model_state_dict = remap_legacy_prism_state_dict_keys(model_state_dict)
@@ -698,7 +698,7 @@ def MedSAM_infer_npz(gt_path_file):
 
             # 从真实标签生成边界框（与官方代码保持一致）
             gt = gt_3D[i,:,:] # (H, W)
-            label_ids = [1] if box_mode == 'full_image' else np.unique(gt)[1:]
+            label_ids = np.unique(gt)[1:]
             for label_id in label_ids:
                 gt2D = np.uint8(gt == label_id) # only one label, (H, W)
                 if gt2D.shape != (newh, neww):
@@ -709,15 +709,14 @@ def MedSAM_infer_npz(gt_path_file):
                 else:
                     gt2D_resize = gt2D.astype(np.uint8)
                 gt2D_padded = pad_image(gt2D_resize, 256) ## (256, 256)
-                if box_mode == 'full_image':
-                    box = np.array([0, 0, 255, 255], dtype=np.int32)
-                elif np.sum(gt2D_padded) > 0:
-                    box = get_bbox(gt2D_padded, bbox_shift) # (4,)
-                else:
-                    continue
-                sam_mask = medsam_inference(medsam_lite_model, image_embedding, box, (newh, neww), (H, W))
-                seg_3D[i, sam_mask>0] = label_id
-                box_list[i][label_id] = box
+                if np.sum(gt2D_padded) > 0:
+                    if box_mode == 'full_image':
+                        box = np.array([0, 0, 255, 255], dtype=np.int32)
+                    else:
+                        box = get_bbox(gt2D_padded, bbox_shift) # (4,)
+                    sam_mask = medsam_inference(medsam_lite_model, image_embedding, box, (newh, neww), (H, W))
+                    seg_3D[i, sam_mask>0] = label_id
+                    box_list[i][label_id] = box
 
         # 保存所有切片的预测结果
         label_ids = np.unique(gt_3D)[1:]

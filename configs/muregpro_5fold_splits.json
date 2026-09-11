@@ -1,0 +1,85 @@
+{
+  "dataset": "muRegPro",
+  "num_folds": 5,
+  "split_seed": 2026,
+  "description": "Patient-disjoint folds used for the publication evaluation. The training pool for each fold is the complement of its validation and test lists.",
+  "patients": [
+    "case000000", "case000001", "case000002", "case000003", "case000004",
+    "case000005", "case000006", "case000007", "case000008", "case000009",
+    "case000010", "case000011", "case000012", "case000013", "case000014",
+    "case000015", "case000016", "case000017", "case000018", "case000019",
+    "case000020", "case000021", "case000022", "case000023", "case000024",
+    "case000025", "case000026", "case000027", "case000028", "case000029",
+    "case000030", "case000031", "case000032", "case000033", "case000034",
+    "case000035", "case000036", "case000037", "case000038", "case000039",
+    "case000040", "case000041", "case000042", "case000043", "case000044",
+    "case000045", "case000046", "case000047", "case000048", "case000049",
+    "case000050", "case000051", "case000052", "case000053", "case000054",
+    "case000055", "case000056", "case000057", "case000058", "case000059",
+    "case000060", "case000061", "case000062", "case000063", "case000064",
+    "case000065", "case000066", "case000067", "case000068", "case000069",
+    "case000070", "case000071", "case000072"
+  ],
+  "folds": [
+    {
+      "fold": 0,
+      "validation": [
+        "case000029", "case000032", "case000034", "case000068", "case000071",
+        "case000072"
+      ],
+      "test": [
+        "case000001", "case000008", "case000010", "case000023", "case000026",
+        "case000038", "case000041", "case000042", "case000047", "case000049",
+        "case000055", "case000059", "case000061", "case000063", "case000070"
+      ]
+    },
+    {
+      "fold": 1,
+      "validation": [
+        "case000006", "case000015", "case000024", "case000035", "case000052",
+        "case000057"
+      ],
+      "test": [
+        "case000002", "case000003", "case000011", "case000012", "case000014",
+        "case000017", "case000027", "case000033", "case000036", "case000044",
+        "case000046", "case000048", "case000050", "case000051", "case000072"
+      ]
+    },
+    {
+      "fold": 2,
+      "validation": [
+        "case000000", "case000005", "case000053", "case000059", "case000062",
+        "case000069"
+      ],
+      "test": [
+        "case000004", "case000009", "case000019", "case000021", "case000024",
+        "case000029", "case000032", "case000034", "case000035", "case000037",
+        "case000045", "case000054", "case000058", "case000060", "case000071"
+      ]
+    },
+    {
+      "fold": 3,
+      "validation": [
+        "case000013", "case000030", "case000040", "case000060", "case000061",
+        "case000070"
+      ],
+      "test": [
+        "case000006", "case000016", "case000018", "case000020", "case000022",
+        "case000025", "case000031", "case000043", "case000052", "case000057",
+        "case000066", "case000067", "case000068", "case000069"
+      ]
+    },
+    {
+      "fold": 4,
+      "validation": [
+        "case000012", "case000017", "case000036", "case000047", "case000058",
+        "case000068"
+      ],
+      "test": [
+        "case000000", "case000005", "case000007", "case000013", "case000015",
+        "case000028", "case000030", "case000039", "case000040", "case000053",
+        "case000056", "case000062", "case000064", "case000065"
+      ]
+    }
+  ]
+}

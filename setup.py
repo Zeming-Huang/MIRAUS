@@ -29,6 +29,6 @@ setup(
     packages=find_packages(exclude="notebooks"),
     extras_require={
         "all": ["pycocotools", "opencv-python", "onnx", "onnxruntime"],
-        "dev": ["flake8", "isort", "black", "mypy"],
+        "dev": ["pytest", "flake8", "isort", "black", "mypy"],
     },
 )
