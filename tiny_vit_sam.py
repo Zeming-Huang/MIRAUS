@@ -1566,7 +1566,12 @@ class SoftSliceCorrespondenceAttention(nn.Module):
         )
         entropy = entropy.clamp(0.0, 1.0)
 
-        candidate_logits = self.candidate_head(enhanced_stack.reshape(B * S, C, H, W)).view(B, S, 1, H, W)
+        # The auxiliary head is trained as a probe of candidate quality. Detaching
+        # its input prevents the candidate loss from bypassing the selector and
+        # directly reshaping the cross-modal candidate features.
+        candidate_logits = self.candidate_head(
+            enhanced_stack.detach().reshape(B * S, C, H, W)
+        ).view(B, S, 1, H, W)
         if mask_gt is not None and candidate_logits.shape[-2:] != mask_gt.shape[-2:]:
             candidate_logits = F.interpolate(
                 candidate_logits.reshape(B * S, 1, H, W),
@@ -1583,7 +1588,12 @@ class SoftSliceCorrespondenceAttention(nn.Module):
 
         utility_target = None
         slice_utility_loss = None
+        candidate_seg_loss = None
         if candidate_losses is not None:
+            valid_float = mri_valid_mask.to(dtype=candidate_losses.dtype)
+            candidate_seg_loss = (
+                candidate_losses * valid_float
+            ).sum() / valid_float.sum().clamp_min(1.0)
             utility_logits = (-candidate_losses / max(self.slice_utility_temperature, 1e-4)).masked_fill(
                 ~mri_valid_mask,
                 -1e9,
@@ -1677,6 +1687,7 @@ class SoftSliceCorrespondenceAttention(nn.Module):
             "transition_score": transition_score,
             "candidate_logits": candidate_logits,
             "candidate_losses": candidate_losses,
+            "candidate_seg_loss": candidate_seg_loss,
             "candidate_agreement": candidate_agreement,
             "slice_utility_target": utility_target,
             "slice_utility_loss": slice_utility_loss,
@@ -1721,6 +1732,7 @@ class CrossModalFeatureExtractor(nn.Module):
         ssca_use_box_aware_pooling=False,
         ssca_boundary_ring_width=3,
         slice_utility_loss_weight=0.0,
+        candidate_seg_loss_weight=1.0,
         slice_utility_temperature=0.5,
         use_transition_aware_beta=False,
         transition_loss_weight=0.0,
@@ -1767,6 +1779,7 @@ class CrossModalFeatureExtractor(nn.Module):
         self.slice_corr_loss_weight = float(slice_corr_loss_weight)
         self.slice_corr_prior_sigma = float(slice_corr_prior_sigma)
         self.slice_utility_loss_weight = float(slice_utility_loss_weight)
+        self.candidate_seg_loss_weight = float(candidate_seg_loss_weight)
         self.transition_loss_weight = float(transition_loss_weight)
         self.depth_prior_enabled = bool(depth_prior_enabled)
         self.lambda_depth_prior = float(lambda_depth_prior)
@@ -2033,6 +2046,12 @@ class CrossModalFeatureExtractor(nn.Module):
                 )
                 if utility_loss is None:
                     utility_loss = trus_feat.new_zeros(())
+                candidate_seg_loss = (
+                    self.last_slice_attention.get("candidate_seg_loss")
+                    if self.last_slice_attention is not None else None
+                )
+                if candidate_seg_loss is None:
+                    candidate_seg_loss = trus_feat.new_zeros(())
                 transition_loss = (
                     self.last_slice_attention.get("transition_loss")
                     if self.last_slice_attention is not None else None
@@ -2042,6 +2061,9 @@ class CrossModalFeatureExtractor(nn.Module):
                 if self.last_slice_attention is not None:
                     self.last_slice_attention["slice_corr_loss"] = slice_corr_loss
                     self.last_slice_attention["utility_loss_weighted"] = self.slice_utility_loss_weight * utility_loss
+                    self.last_slice_attention["candidate_seg_loss_weighted"] = (
+                        self.candidate_seg_loss_weight * candidate_seg_loss
+                    )
                     self.last_slice_attention["transition_loss_weighted"] = self.transition_loss_weight * transition_loss
                     self.last_slice_attention["rho"] = rho
                     self.last_slice_attention["u_depth"] = u_depth
@@ -2064,6 +2086,7 @@ class CrossModalFeatureExtractor(nn.Module):
                 )
                 aux_weighted_extra = (
                     self.slice_utility_loss_weight * utility_loss
+                    + self.candidate_seg_loss_weight * candidate_seg_loss
                     + self.transition_loss_weight * transition_loss
                     + depth_weighted
                 )

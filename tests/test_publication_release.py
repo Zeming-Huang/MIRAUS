@@ -93,6 +93,45 @@ def test_student_distill_stage_freezes_privileged_teacher_modules():
     assert all(p.requires_grad for p in model.prompt_encoder.parameters())
 
 
+def test_candidate_utility_head_receives_direct_segmentation_gradient():
+    from tiny_vit_sam import CrossModalFeatureExtractor
+
+    torch.manual_seed(11)
+    extractor = CrossModalFeatureExtractor(
+        in_channels=16,
+        num_heads=4,
+        use_fusion=False,
+        ssca_max_window_size=5,
+        slice_utility_loss_weight=1.0,
+        candidate_seg_loss_weight=1.0,
+    )
+    trus_feature = torch.randn(2, 16, 4, 4)
+    mri_features = torch.randn(2, 5, 16, 4, 4)
+    masks = (torch.rand(2, 1, 4, 4) > 0.5).float()
+    boxes = torch.tensor(
+        [[[0.0, 0.0, 255.0, 255.0]], [[0.0, 0.0, 255.0, 255.0]]]
+    )
+
+    _, _, auxiliary_loss = extractor(
+        trus_feature,
+        mri_features,
+        return_loss=True,
+        slice_attention_mode="ssca_entropy",
+        boxes=boxes,
+        image_hw=(256, 256),
+        mask_gt=masks,
+        mri_valid_mask=torch.ones(2, 5, dtype=torch.bool),
+    )
+    auxiliary_loss.backward()
+
+    gradients = [
+        parameter.grad for parameter in extractor.ssca.candidate_head.parameters()
+    ]
+    assert gradients
+    assert all(gradient is not None for gradient in gradients)
+    assert sum(float(gradient.abs().sum()) for gradient in gradients) > 0.0
+
+
 def test_public_fivefold_split_is_disjoint_and_complete():
     split_path = Path(__file__).parents[1] / "configs" / "muregpro_5fold_splits.json"
     payload = json.loads(split_path.read_text(encoding="utf-8"))

@@ -23,6 +23,7 @@ This release contains the complete implementation of the proposed method:
 - modality-specific TRUS and MRI encoders;
 - local multi-slice MRI context construction;
 - TRUS-conditioned cross-attention and utility-supervised soft aggregation;
+- direct candidate-head segmentation supervision with a detached utility target;
 - frozen-teacher privileged residual transfer;
 - the zero-initialized student refinement adapter;
 - mixed full-image and coarse-box prompt adaptation;
@@ -67,6 +68,8 @@ The implementation was developed with Python 3.10 and PyTorch 2.x. CUDA is recom
 
 Teacher pretraining and student distillation use the same entry point. Dataset locations, pretrained modality encoders, optimization settings, and output directories are supplied from the command line.
 
+During teacher pretraining, the candidate head is optimized by its mean segmentation loss. Candidate errors are converted into a detached utility distribution, which supervises the predicted slice weights without allowing the selector to modify its own target.
+
 ```bash
 # Stage 1: MRI-privileged teacher
 python train_dual_modal.py \
@@ -81,6 +84,7 @@ python train_dual_modal.py \
   -slice_attention_mode ssca_entropy \
   -ssca_use_box_aware_pooling \
   -slice_utility_loss_weight <UTILITY_WEIGHT> \
+  -candidate_seg_loss_weight <CANDIDATE_HEAD_WEIGHT> \
   -mmd_loss_weight 0 \
   -freeze_encoders \
   --no_fusion \

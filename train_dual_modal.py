@@ -313,6 +313,10 @@ parser.add_argument(
     help="Weight of the SSCA-v3 candidate-utility supervision loss."
 )
 parser.add_argument(
+    "-candidate_seg_loss_weight", type=float, default=1.0,
+    help="Direct segmentation-loss weight for training the candidate utility head."
+)
+parser.add_argument(
     "-slice_utility_temperature", type=float, default=0.5,
     help="Softmax temperature used to convert candidate losses into a utility target."
 )
@@ -946,6 +950,7 @@ medsam_lite_model = EnhancedDualModalMedSAM_Lite(
     ssca_use_box_aware_pooling=args.ssca_use_box_aware_pooling,
     ssca_boundary_ring_width=args.ssca_boundary_ring_width,
     slice_utility_loss_weight=args.slice_utility_loss_weight,
+    candidate_seg_loss_weight=args.candidate_seg_loss_weight,
     slice_utility_temperature=args.slice_utility_temperature,
     use_transition_aware_beta=args.use_transition_aware_beta,
     transition_loss_weight=args.transition_loss_weight,
@@ -1086,6 +1091,7 @@ def main():
     print(f"beta modulation enabled: {args.beta_modulation_enabled}")
     print(f"dynamic bandwidth enabled: {args.use_dynamic_bandwidth_beta}")
     print(f"candidate utility loss weight: {args.slice_utility_loss_weight}")
+    print(f"candidate head segmentation loss weight: {args.candidate_seg_loss_weight}")
     print(f"transition loss weight: {args.transition_loss_weight}")
     print(f"transition cls/reg weights: {args.transition_cls_loss_weight}/{args.transition_reg_loss_weight}")
     print(f"mmd_loss_weight: {mmd_loss_weight}")
@@ -2082,6 +2088,7 @@ def main():
         neighbor_trust = _to_list(info.get("neighbor_trust"))
         sigma = _to_list(info.get("sigma"))
         candidate_losses = _to_list(info.get("candidate_losses"))
+        candidate_seg_loss = info.get("candidate_seg_loss")
         utility_loss = info.get("slice_utility_loss")
         transition_loss = info.get("transition_loss")
         transition_cls_loss = info.get("transition_cls_loss")
@@ -2092,6 +2099,8 @@ def main():
             slice_corr_loss = float(slice_corr_loss.detach().cpu())
         if torch.is_tensor(utility_loss):
             utility_loss = float(utility_loss.detach().cpu())
+        if torch.is_tensor(candidate_seg_loss):
+            candidate_seg_loss = float(candidate_seg_loss.detach().cpu())
         if torch.is_tensor(transition_loss):
             transition_loss = float(transition_loss.detach().cpu())
         if torch.is_tensor(transition_cls_loss):
@@ -2164,6 +2173,7 @@ def main():
                     "sigma",
                     "mask_area",
                     "candidate_losses",
+                    "candidate_seg_loss",
                     "slice_utility_loss",
                     "slice_locality_loss",
                     "transition_loss",
@@ -2213,6 +2223,7 @@ def main():
                     "sigma": sigma[i] if sigma is not None else "",
                     "mask_area": mask_areas[i] if mask_areas is not None else "",
                     "candidate_losses": candidate_losses[i] if candidate_losses is not None else "",
+                    "candidate_seg_loss": candidate_seg_loss if candidate_seg_loss is not None else "",
                     "slice_utility_loss": utility_loss if utility_loss is not None else "",
                     "slice_locality_loss": slice_corr_loss if slice_corr_loss is not None else "",
                     "transition_loss": transition_loss if transition_loss is not None else "",
@@ -2319,6 +2330,7 @@ def main():
             "neighbor_trust",
             "sigma",
             "slice_utility_loss",
+            "candidate_seg_loss",
             "slice_locality_loss",
             "slice_corr_loss",
             "transition_loss",
