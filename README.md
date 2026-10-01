@@ -2,7 +2,7 @@
 
 **MRI-privileged learning for single-frame TRUS prostate segmentation**
 
-[Interactive Results](https://zeming-huang.github.io/MIRAUS/) | [μRegPro Dataset](https://doi.org/10.5281/zenodo.8004388) | [MedSAM](https://github.com/bowang-lab/MedSAM)
+[Interactive Results](https://anonymous.4open.science/w/MIRAUS/) | [μRegPro Dataset](https://doi.org/10.5281/zenodo.8004388) | [MedSAM](https://github.com/bowang-lab/MedSAM)
 
 MIRAUS uses paired MRI as privileged information during training to improve a lightweight single-frame TRUS segmentation model. MRI and the privileged teacher are removed after training; deployment requires only one TRUS frame and supports automatic full-image or box-assisted inference.
 
@@ -34,7 +34,17 @@ The publication checkpoints are not included in the repository and will be relea
 
 ## Interactive Results
 
-The [result explorer](https://zeming-huang.github.io/MIRAUS/) contains 15 anonymized μRegPro examples. Each example includes apex, mid-gland, and base frames with the manual reference, a TRUS-only baseline, MIRAUS, and the signed probability difference. The gallery contains favorable, representative, and difficult cases.
+The [result explorer](https://anonymous.4open.science/w/MIRAUS/) contains 15 anonymized μRegPro examples. Each example includes apex, mid-gland, and base frames with the manual reference, a TRUS-only baseline, MIRAUS, and the signed probability difference. The gallery contains favorable, representative, and difficult cases.
+
+### View the results locally
+
+If the hosted anonymous viewer cannot load because of browser sandbox restrictions, the same examples can be viewed locally after downloading the repository:
+
+```bash
+python -m http.server 8000 --directory docs
+```
+
+Open `http://localhost:8000/` in a browser. This viewer uses the included results and does not require model checkpoints or a GPU.
 
 ## Code Layout
 
@@ -55,9 +65,9 @@ The [result explorer](https://zeming-huang.github.io/MIRAUS/) contains 15 anonym
 
 ## Installation
 
+Download and extract the repository ZIP, then open a terminal in the extracted repository directory. Use the **Download** button on the anonymous repository page or **Code > Download ZIP** on GitHub.
+
 ```bash
-git clone https://github.com/Zeming-Huang/MIRAUS.git
-cd MIRAUS
 pip install -r requirements.txt
 pip install -e .
 ```
