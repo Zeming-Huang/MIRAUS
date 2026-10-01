@@ -9,8 +9,8 @@ MIRAUS uses paired MRI as privileged information during training to improve a li
 ## Framework
 
 <p align="center">
-  <a href="assets/miraus-framework.png">
-    <img src="assets/miraus-framework.png" alt="MIRAUS framework: MRI-privileged teacher pretraining, residual privileged transfer, and MRI-free single-frame TRUS deployment" width="100%">
+  <a href="https://anonymous.4open.science/api/repo/MIRAUS/file/assets/miraus-framework.png">
+    <img src="https://anonymous.4open.science/api/repo/MIRAUS/file/assets/miraus-framework.png" alt="MIRAUS framework: MRI-privileged teacher pretraining, residual privileged transfer, and MRI-free single-frame TRUS deployment" width="100%">
   </a>
 </p>
 
